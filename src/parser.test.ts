@@ -1,0 +1,205 @@
+import { test, expect, describe } from "bun:test";
+import { parseShell } from "../index.ts";
+
+function parseCmd(src: string) {
+  const script = parseShell(src);
+  return script.commands;
+}
+
+describe("parser", () => {
+  test("simple command", () => {
+    const cmds = parseCmd("echo hello");
+    expect(cmds.length).toBe(1);
+    const pipeline = cmds[0]!;
+    expect(pipeline.type).toBe("Pipeline");
+    if (pipeline.type === "Pipeline") {
+      expect(pipeline.commands[0]!.type).toBe("SimpleCommand");
+      const cmd = pipeline.commands[0] as any;
+      expect(cmd.name.parts[0].value).toBe("echo");
+      expect(cmd.args.length).toBe(1);
+    }
+  });
+
+  test("assignment only", () => {
+    const cmds = parseCmd('NAME="world"');
+    expect(cmds.length).toBe(1);
+    const pipeline = cmds[0]! as any;
+    const cmd = pipeline.commands[0];
+    expect(cmd.type).toBe("SimpleCommand");
+    expect(cmd.assignments.length).toBe(1);
+    expect(cmd.assignments[0].name).toBe("NAME");
+  });
+
+  test("pipeline", () => {
+    const cmds = parseCmd("cat file | grep pattern | head -5");
+    expect(cmds.length).toBe(1);
+    const pipeline = cmds[0]! as any;
+    expect(pipeline.type).toBe("Pipeline");
+    expect(pipeline.commands.length).toBe(3);
+  });
+
+  test("and-or list", () => {
+    const cmds = parseCmd("mkdir /tmp/test && echo success");
+    expect(cmds.length).toBe(1);
+    expect(cmds[0]!.type).toBe("List");
+    const list = cmds[0]! as any;
+    expect(list.op).toBe("&&");
+  });
+
+  test("redirections", () => {
+    const cmds = parseCmd("echo hello > out.txt");
+    const pipeline = cmds[0]! as any;
+    const cmd = pipeline.commands[0];
+    expect(cmd.redirects.length).toBe(1);
+    expect(cmd.redirects[0].op).toBe(">");
+  });
+
+  test("if/elif/else/fi", () => {
+    const script = parseShell(`
+if [ -f /tmp/x ]; then
+    echo exists
+elif [ -d /tmp ]; then
+    echo dir
+else
+    echo nope
+fi
+`);
+    const pipeline = script.commands[0]! as any;
+    const ifCmd = pipeline.commands[0];
+    expect(ifCmd.type).toBe("IfClause");
+    expect(ifCmd.elifs.length).toBe(1);
+    expect(ifCmd.else).not.toBeNull();
+  });
+
+  test("for loop", () => {
+    const script = parseShell("for i in 1 2 3; do echo $i; done");
+    const pipeline = script.commands[0]! as any;
+    const forCmd = pipeline.commands[0];
+    expect(forCmd.type).toBe("ForClause");
+    expect(forCmd.variable).toBe("i");
+    expect(forCmd.words!.length).toBe(3);
+  });
+
+  test("while loop", () => {
+    const script = parseShell("while true; do echo loop; done");
+    const pipeline = script.commands[0]! as any;
+    const cmd = pipeline.commands[0];
+    expect(cmd.type).toBe("WhileClause");
+  });
+
+  test("until loop", () => {
+    const script = parseShell('until [ "$x" -eq 0 ]; do x=$((x-1)); done');
+    const pipeline = script.commands[0]! as any;
+    const cmd = pipeline.commands[0];
+    expect(cmd.type).toBe("UntilClause");
+  });
+
+  test("case statement", () => {
+    const script = parseShell(`case "$x" in
+  hello) echo hi;;
+  world|earth) echo planet;;
+  *) echo default;;
+esac`);
+    const pipeline = script.commands[0]! as any;
+    const caseCmd = pipeline.commands[0];
+    expect(caseCmd.type).toBe("CaseClause");
+    expect(caseCmd.items.length).toBe(3);
+    expect(caseCmd.items[1].patterns.length).toBe(2);
+  });
+
+  test("function def with parens", () => {
+    const script = parseShell("greet() { echo hi; }");
+    const pipeline = script.commands[0]! as any;
+    const fn = pipeline.commands[0];
+    expect(fn.type).toBe("FunctionDef");
+    expect(fn.name).toBe("greet");
+  });
+
+  test("function keyword", () => {
+    const script = parseShell("function cleanup { echo done; }");
+    const pipeline = script.commands[0]! as any;
+    const fn = pipeline.commands[0];
+    expect(fn.type).toBe("FunctionDef");
+    expect(fn.name).toBe("cleanup");
+  });
+
+  test("subshell", () => {
+    const script = parseShell("(cd /tmp && ls)");
+    const pipeline = script.commands[0]! as any;
+    const sub = pipeline.commands[0];
+    expect(sub.type).toBe("Subshell");
+  });
+
+  test("brace group", () => {
+    const script = parseShell("{ echo grouped; echo commands; }");
+    const pipeline = script.commands[0]! as any;
+    const bg = pipeline.commands[0];
+    expect(bg.type).toBe("BraceGroup");
+  });
+
+  test("comments are collected", () => {
+    const script = parseShell("# comment\necho hello");
+    expect(script.comments.length).toBeGreaterThan(0);
+  });
+
+  test("negated pipeline", () => {
+    const script = parseShell("! grep -q pattern file");
+    const pipeline = script.commands[0]! as any;
+    expect(pipeline.type).toBe("Pipeline");
+    expect(pipeline.negated).toBe(true);
+  });
+
+  test("heredoc", () => {
+    const script = parseShell("cat <<EOF\nhello world\nEOF\n");
+    const pipeline = script.commands[0]! as any;
+    const cmd = pipeline.commands[0];
+    expect(cmd.redirects.length).toBe(1);
+    expect(cmd.redirects[0].op).toBe("<<");
+  });
+
+  test("double brackets parsed as simple command", () => {
+    const script = parseShell('[[ "$x" == y ]]');
+    const pipeline = script.commands[0]! as any;
+    const cmd = pipeline.commands[0];
+    expect(cmd.type).toBe("SimpleCommand");
+    expect(cmd.name.parts[0].value).toBe("[[");
+  });
+
+  test("variable expansion in compound word", () => {
+    const script = parseShell('echo "Hello, $NAME!"');
+    const pipeline = script.commands[0]! as any;
+    const cmd = pipeline.commands[0];
+    const arg = cmd.args[0];
+    expect(arg.parts.some((p: any) => p.type === "VariableExpansion")).toBe(true);
+  });
+
+  test("braced variable expansion", () => {
+    const script = parseShell('echo "${NAME:-default}"');
+    const pipeline = script.commands[0]! as any;
+    const cmd = pipeline.commands[0];
+    const arg = cmd.args[0];
+    expect(arg.parts.some((p: any) =>
+      p.type === "VariableExpansion" && p.braced === true && p.expression === "NAME:-default"
+    )).toBe(true);
+  });
+});
+
+describe("fixture: sample.sh", () => {
+  test("parses the full fixture without throwing", async () => {
+    const src = await Bun.file("fixtures/sample.sh").text();
+    expect(() => parseShell(src)).not.toThrow();
+  });
+
+  test("fixture produces correct top-level command count", async () => {
+    const src = await Bun.file("fixtures/sample.sh").text();
+    const script = parseShell(src);
+    // Should have many top-level commands (assignments, commands, if, for, etc.)
+    expect(script.commands.length).toBeGreaterThan(20);
+  });
+
+  test("fixture comments are collected", async () => {
+    const src = await Bun.file("fixtures/sample.sh").text();
+    const script = parseShell(src);
+    expect(script.comments.length).toBeGreaterThan(5);
+  });
+});
