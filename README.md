@@ -1,14 +1,27 @@
 # shell-ast-parser
 
-A tokenizer and parser that turns bash/sh source into a typed AST. Every node
-carries a source range, and quoting is preserved — so the tree tells you not
-just what the script says, but where it says it and whether the shell would
-expand it.
+A tokenizer and parser that turns bash, sh and zsh source into a typed AST.
+Every node carries a source range, and quoting is preserved — so the tree tells
+you not just what the script says, but where it says it and whether the shell
+would expand it.
 
 Written for static analysis: linting shell scripts, finding commands, auditing
 what a script actually runs.
 
+No dependencies, and nothing to configure but the dialect.
+
+## Requirements
+
+[Bun](https://bun.sh) 1.0 or newer. TypeScript 5 if you want the types, which is
+most of the point.
+
 ## Install
+
+Not published to a registry — clone it, or add the checkout as a dependency:
+
+```bash
+git clone https://github.com/mherod/shell-ast-parser.git
+```
 
 ```bash
 bun install
@@ -27,6 +40,16 @@ Reading zsh takes a dialect. It defaults to `"bash"`, which also covers sh:
 ```ts
 parseShell(source, { dialect: "zsh" });
 ```
+
+That option is the whole configuration surface — nothing is read from the
+environment or from a config file.
+
+| Option | Values | Default | Description |
+|---|---|---|---|
+| `dialect` | `"bash"`, `"zsh"` | `"bash"` | Which grammar to read the source as. `"bash"` covers sh and rejects zsh-only syntax; `"zsh"` adds the constructs below. |
+
+`tokenize` and `parse` take the same options, so a split pipeline keeps the
+dialect: `parse(tokenize(src, opts), opts)`.
 
 You get a `Script` whose `commands` are `Pipeline`s wrapping the actual
 commands:
@@ -106,7 +129,9 @@ parseShell("echo $((1+2*3))");   // ArithmeticBinary + { left: 1, right: (2 * 3)
 
 Simple commands, pipelines (`|`, `!`), lists (`&&`, `||`, `;`), background (`&`),
 redirections (`>`, `>>`, `<`, `>&`, `<&`, `>|`, `<>`, `<<<`) and heredocs
-(`<<`, `<<-`, quoted delimiters, several per command), `if`/`elif`/`else`,
+(`<<`, `<<-`, several per command, and every way of quoting the delimiter —
+`'EOF'`, `"EOF"` and `\EOF` all name EOF and all stop the body expanding),
+`if`/`elif`/`else`,
 `for` (both word-list and C-style), `while`, `until`, `case` (including the
 `;&` and `;;&` fallthrough terminators), `(( … ))`, subshells, brace groups,
 functions (both forms), `coproc`, comments.
@@ -212,11 +237,38 @@ pattern — and `<->` is a numeric range wherever a pattern may appear.
   that point on; separating those needs scope and flow analysis.
 - **Portability is described, not judged.** GNU-only regex constructs get their
   own node types, but nothing decides whether your libc supports them.
-- **zsh is covered by what has been run through it.** Every file of a prezto
-  install parses — 381 files and about 2 MB, including powerlevel10k's engine
-  and zsh-syntax-highlighting — but zsh is large, and what no corpus exercised
-  is untested rather than known to work. Anything unsupported raises a
-  `ParseError` naming the position rather than parsing to something plausible.
+- **Coverage is what has been run through it.** The corpora below are large, but
+  both shells are larger, and what no corpus exercised is untested rather than
+  known to work. Anything unsupported raises a `ParseError` naming the position
+  rather than parsing to something plausible.
+
+## Tested against
+
+Beyond the unit tests, the parser is run over shell scripts nobody wrote for it.
+Real scripts are the harsher corpus: written over years, by many hands, against
+whichever shell was in front of them.
+
+| Corpus | Result |
+|---|---|
+| A prezto install, incl. powerlevel10k and zsh-syntax-highlighting | 388/388 files, 2.0 MB |
+| zsh startup chain (`.zshenv` … `.zlogin`, `/etc`, `.p10k.zsh`) | 15/15 files |
+| Homebrew and `/usr/local` | 894/909 files, 10.8 MB |
+
+The Homebrew figure comes from walking 305,655 installed files and keeping the
+909 that are shell. Most carry no extension, so they are found by shebang, and
+each is read as the shell its shebang names.
+
+Fourteen of the fifteen failures are files `bash -n` rejects too: Ruby and Tcl
+programs wearing a `#!/bin/sh` hat, whose second line hands the file to another
+interpreter, plus one script that is simply broken. The exception is a 526 KB
+generated libtool `configure` — the one file here that bash accepts and this
+does not.
+
+Reproduce any of it:
+
+```bash
+bun scripts/debug-shell-corpus.ts --first /opt/homebrew /usr/local
+```
 
 ## Development
 
@@ -225,7 +277,28 @@ bun test
 ```
 
 ```bash
-bunx tsc --noEmit
+bun run typecheck
 ```
 
-Both run in CI on every push and pull request.
+Both run in CI on every push and pull request, the test job under a timeout —
+the regressions this suite exists to catch include the kind that loops forever
+instead of failing.
+
+`scripts/` holds the diagnostic probes written while chasing real bugs, kept
+because the next investigator can rerun them rather than rewrite them.
+`debug-shell-corpus.ts` sweeps a directory and groups failures by construct;
+`debug-shell-oracle.ts` settles whether a construct is a genuine gap by asking
+`bash -n` and `zsh -n`; `debug-readme-claims.ts` checks that this file still
+tells the truth.
+
+## Contributing
+
+Issues and pull requests welcome at
+[mherod/shell-ast-parser](https://github.com/mherod/shell-ast-parser).
+
+A parser change wants evidence, not just a green suite. The useful shape is: a
+failing case reduced to one line, the shell's own verdict on it from `bash -n`
+or `zsh -n`, then the fix and a test that would have caught it. Bugs where the
+parser returns a *wrong tree* rather than an error are the ones worth hunting —
+they are invisible to a caller, so a test that asserts the shape beats one that
+asserts it parsed.
