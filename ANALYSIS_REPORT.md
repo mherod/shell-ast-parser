@@ -9,10 +9,10 @@ forever in `parseCompoundList`. That was not in the original report, which
 concluded the parser was "fundamentally sound".
 
 Findings 1–5 are defects the parser had, 6–10 are constructs it silently dropped
-on the floor, and 11–19 are places where the AST asserted things about the
+on the floor, and 11–20 are places where the AST asserted things about the
 source that were not true.
 
-Status: all findings below are fixed. `bun test` → 171 pass / 0 fail. `tsc --noEmit` → clean.
+Status: all findings below are fixed. `bun test` → 184 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -325,6 +325,32 @@ several heredocs on one command.
 Gating this on the shell-code flag is what keeps `<<` an operator elsewhere:
 `$((1<<2))` and `${a<<b}` are unaffected, since neither region holds shell code.
 
+### 20. Extended globs produced a phantom subshell — MEDIUM
+**Files:** `src/tokenizer.ts`, `src/parser.ts`
+
+`?(a|b)`, `*(…)`, `+(…)`, `@(…)` and `!(…)` were not recognised. The lead
+character ended the word and the parenthesised list became a subshell, so
+`echo ?(a|b)` parsed as two commands and `echo @(x|y).txt` as three — the same
+phantom-command shape as finding 17. In a `case` pattern it was worse:
+`case x in @(a|b)) … esac` threw a `ParseError`.
+
+**Fix:** `readWord` consumes the group into the word, and `parseWordParts`
+emits one `GlobPattern` spanning it. Groups nest (`@(a|@(b|c))`) and may
+contain other glob syntax (`!(*.o|*.a)`). Quoting and escaping defeat it, as
+with any other glob.
+
+`!` is the exception: at the start of a command it stays the pipeline negation
+keyword, so `!(cmd)` still parses as a negated subshell. Only in an argument
+position is `!(…)` a pattern.
+
+The group is kept whole rather than split into alternatives, matching how
+`[abc]` is already handled — so an expansion inside one, as in `@($x|b)`, is
+part of the pattern text rather than a `VariableExpansion` node.
+
+One input remains odd: `echo \?(a)` yields a literal `?` followed by a
+subshell. The escape correctly suppresses the glob; the trailing `(a)` is a
+syntax error in bash, so there is no correct tree to produce.
+
 ---
 
 ## Original findings that did not hold
@@ -347,18 +373,15 @@ for code that lives in `parser.ts`.
 
 ## Known gaps
 
-- **Extended globs.** `?(a|b)`, `*(…)`, `+(…)` are unsupported: the
-  metacharacter reads as a plain glob and the parenthesised list becomes a
-  separate subshell, so `echo ?(a|b)` yields two commands. They require
-  `shopt -s extglob` and are a syntax error in bash without it, so no correct
-  single interpretation exists — but the phantom subshell is the same shape of
-  wrongness as finding 17 and deserves a real fix if extglob matters.
+- **Glob patterns are not decomposed.** `GlobPattern.value` is the pattern text,
+  so the alternatives of `@(a|b)` and the members of `[abc]` are not separate
+  nodes, and an expansion inside one is not a `VariableExpansion`.
 - **Arithmetic is not parsed.** `ArithmeticExpansion.expression` is raw text.
 - **`case` patterns and `[[ … ]]` contents** are words, not test expressions.
 
 ## Regression coverage added
 
-`src/parser.test.ts`, 171 tests total: heredoc content attachment, two-heredoc
+`src/parser.test.ts`, 184 tests total: heredoc content attachment, two-heredoc
 ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
 `[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
 detached-paren disambiguation, unterminated), background on pipelines and lists

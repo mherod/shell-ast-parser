@@ -871,6 +871,62 @@ describe("heredocs inside substitutions", () => {
   });
 });
 
+describe("extended globs", () => {
+  const shape = (src: string) =>
+    (parseShell(src).commands[0] as any).commands[0].args[0].parts.map((p: any) => `${p.type}:${p.value}`);
+
+  for (const lead of ["?", "*", "+", "@", "!"]) {
+    test(`${lead}( … ) is one glob, not a word plus a subshell`, () => {
+      const src = `echo ${lead}(a|b)`;
+      expect(parseShell(src).commands.length).toBe(1);
+      expect(shape(src)).toEqual([`GlobPattern:${lead}(a|b)`]);
+    });
+  }
+
+  test("adjacent literals are kept", () => {
+    expect(shape("echo a?(b)c")).toEqual(["Word:a", "GlobPattern:?(b)", "Word:c"]);
+    expect(shape("echo @(x|y).txt")).toEqual(["GlobPattern:@(x|y)", "Word:.txt"]);
+  });
+
+  test("groups nest", () => {
+    expect(shape("echo @(a|@(b|c))")).toEqual(["GlobPattern:@(a|@(b|c))"]);
+  });
+
+  test("a group may contain other glob syntax", () => {
+    expect(shape("ls !(*.o|*.a)")).toEqual(["GlobPattern:!(*.o|*.a)"]);
+  });
+
+  test("quoting and escaping defeat it", () => {
+    expect(shape('echo "?(a|b)"')).toEqual(["Word:?(a|b)"]);
+    expect(shape("echo '?(a)'")).toEqual(["Word:?(a)"]);
+    expect(shape("echo \\?(a)")).toEqual(["Word:?"]);
+  });
+
+  test("a case pattern may be an extended glob", () => {
+    const caseCmd = (parseShell("case x in @(a|b)) echo m ;; esac").commands[0] as any).commands[0];
+    expect(caseCmd.items.length).toBe(1);
+    expect(caseCmd.items[0].patterns[0].parts[0].value).toBe("@(a|b)");
+  });
+
+  describe("! stays the negation keyword at command start", () => {
+    test("!(cmd) negates a subshell", () => {
+      const pipeline = parseShell("!(cmd)").commands[0] as any;
+      expect(pipeline.negated).toBe(true);
+      expect(pipeline.commands[0].type).toBe("Subshell");
+    });
+
+    test("! cmd still negates", () => {
+      expect((parseShell("! grep -q x f").commands[0] as any).negated).toBe(true);
+    });
+  });
+
+  test("unterminated groups do not hang", () => {
+    for (const src of ["echo ?(", "echo @(a", "echo !(", "echo *(("]) {
+      expect(() => parseShell(src)).not.toThrow();
+    }
+  });
+});
+
 describe("fixture: sample.sh", () => {
   test("parses the full fixture without throwing", async () => {
     const src = await Bun.file("fixtures/sample.sh").text();

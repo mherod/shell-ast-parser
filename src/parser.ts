@@ -4,7 +4,7 @@ import type {
   IfClause, ForClause, WhileClause, UntilClause, CaseClause, CaseItem,
   Subshell, BraceGroup, FunctionDef, Comment, Coproc,
 } from "./ast.ts";
-import { tokenize, readHereDocHeader, skipHereDocBodies, type Token, TokenType } from "./tokenizer.ts";
+import { tokenize, readHereDocHeader, skipHereDocBodies, EXTGLOB_LEADS, type Token, TokenType } from "./tokenizer.ts";
 
 const ANSI_C_ESCAPES: Record<string, string> = {
   a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f",
@@ -1151,6 +1151,15 @@ export class Parser {
           addLiteral(ch, i);
           i++;
         }
+      } else if (quote === null && EXTGLOB_LEADS.includes(ch) && raw[i + 1] === "(") {
+        // Extended glob: ?(a|b), *(…), +(…), @(…), !(…). The whole group is one
+        // pattern — its alternatives are not parsed, matching how [abc] is kept
+        // whole.
+        flushLiteral(i);
+        const start = i;
+        const { next } = readDelimited(raw, i + 1, "(", ")");
+        i = next;
+        parts.push({ type: "GlobPattern", value: raw.slice(start, i), range: at(start, i) });
       } else if (quote === null && (ch === "*" || ch === "?")) {
         // Glob metacharacters only glob unquoted — "*.ts" is a literal filename
         flushLiteral(i);

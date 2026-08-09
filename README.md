@@ -97,7 +97,10 @@ forms), `coproc`, `[[ … ]]`, comments.
 
 Words resolve into parts: literals, variable expansions (`$x`, `${x:-d}`),
 command substitutions (`$( )` and backticks), arithmetic (`$(( ))`), process
-substitutions (`<( )`, `>( )`), and glob patterns (`*`, `?`, `[…]`).
+substitutions (`<( )`, `>( )`), and glob patterns — `*`, `?`, `[…]` bracket
+expressions, and extended globs `?(…)`, `*(…)`, `+(…)`, `@(…)`, `!(…)`.
+Quoting and escaping defeat globbing, as in the shell. At the start of a
+command `!` stays the negation keyword, so `!(cmd)` negates a subshell.
 
 Assignments cover scalars, arrays (`X=(a b)`), appends (`X+=y`), subscripts
 (`X[i]=y`), and declaration builtins, where the assignment is an argument:
@@ -105,12 +108,11 @@ Assignments cover scalars, arrays (`X=(a b)`), appends (`X+=y`), subscripts
 
 ## Known limitations
 
-- **Extended globs** (`?(…)`, `*(…)`, `+(…)`) are not supported. The
-  metacharacter is read as a plain glob and the parenthesised list becomes a
-  separate subshell, so `echo ?(a|b)` parses as two commands. These need
-  `shopt -s extglob` in bash and are rejected outright without it.
-- **`GlobPattern` is syntactic.** It marks unquoted metacharacters; it does not
-  tell you whether anything matches.
+- **`GlobPattern` is syntactic, and kept whole.** It marks unquoted
+  metacharacters; it does not tell you whether anything matches. The value is
+  the pattern text, so the alternatives of `@(a|b)` and the members of `[abc]`
+  are not separate nodes — and an expansion inside one, as in `@($x|b)`, is
+  part of that text rather than a `VariableExpansion`.
 - **Arithmetic is not parsed.** `ArithmeticExpansion.expression` is the raw
   text between the parens.
 - **`case` patterns and `[[ … ]]` contents** are kept as words rather than

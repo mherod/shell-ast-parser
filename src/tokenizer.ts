@@ -40,6 +40,9 @@ const KEYWORDS = new Set([
  */
 const DECLARATION_BUILTINS = new Set(["declare", "typeset", "local", "export", "readonly"]);
 
+/** Characters that turn `(pattern-list)` into an extended glob */
+export const EXTGLOB_LEADS = "?*+@!";
+
 function isWhitespace(ch: string): boolean {
   return ch === " " || ch === "\t";
 }
@@ -515,6 +518,18 @@ export class Tokenizer {
         continue;
       }
 
+      // Extended glob: ?( *( +( @( !( — the group belongs to the word, not to a
+      // subshell. `!` is excluded at the start of a command, where it is the
+      // pipeline negation keyword and `!(cmd)` negates a subshell.
+      if (EXTGLOB_LEADS.includes(ch) && this.src[this.pos + 1] === "(" &&
+          !(ch === "!" && this.atCommandStart && this.pos === start)) {
+        value += ch;
+        this.pos++;
+        // A pattern list, not shell code: no comments or heredocs inside
+        value += this.readParenGroup(false);
+        continue;
+      }
+
       if (!isWordChar(ch)) break;
 
       if (ch === "=" && !hasEquals) {
@@ -723,9 +738,9 @@ export class Tokenizer {
   }
 
   /** Read a parenthesized group: ( ... ) tracking nesting */
-  private readParenGroup(): string {
+  private readParenGroup(shellCode: boolean = true): string {
     this.pos++; // skip (
-    const { text, closed } = this.readBalanced("(", ")", 1, true);
+    const { text, closed } = this.readBalanced("(", ")", 1, shellCode);
     return "(" + text + (closed ? ")" : "");
   }
 }
