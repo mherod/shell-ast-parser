@@ -17,6 +17,8 @@ export class Parser {
   private tokens: Token[];
   private pos: number = 0;
   private comments: Comment[] = [];
+  /** Heredoc targets awaiting a body, in the order the tokenizer will emit them */
+  private pendingHereDocs: HereDoc[] = [];
 
   constructor(tokens: Token[]) {
     this.tokens = tokens;
@@ -81,7 +83,7 @@ export class Parser {
   }
 
   private skipNewlines(): void {
-    while (this.at(TokenType.Newline) || this.at(TokenType.Comment)) {
+    while (this.at(TokenType.Newline) || this.at(TokenType.Comment) || this.at(TokenType.HereDocBody)) {
       if (this.at(TokenType.Comment)) {
         const tok = this.advance();
         this.comments.push({
@@ -89,6 +91,8 @@ export class Parser {
           value: tok.value,
           range: tok.range,
         });
+      } else if (this.at(TokenType.HereDocBody)) {
+        this.consumeHereDocBody();
       } else {
         this.advance();
       }
@@ -96,7 +100,12 @@ export class Parser {
   }
 
   private skipNewlinesAndSemicolons(): void {
-    while (this.at(TokenType.Newline) || this.atAny(TokenType.Operator, ";") || this.at(TokenType.Comment)) {
+    while (
+      this.at(TokenType.Newline) ||
+      this.atAny(TokenType.Operator, ";") ||
+      this.at(TokenType.Comment) ||
+      this.at(TokenType.HereDocBody)
+    ) {
       if (this.at(TokenType.Comment)) {
         const tok = this.advance();
         this.comments.push({
@@ -104,9 +113,24 @@ export class Parser {
           value: tok.value,
           range: tok.range,
         });
+      } else if (this.at(TokenType.HereDocBody)) {
+        this.consumeHereDocBody();
       } else {
         this.advance();
       }
+    }
+  }
+
+  /**
+   * The tokenizer emits heredoc bodies after the newline that closes the command,
+   * in the order the delimiters were declared. Attach each body to the heredoc
+   * that claimed it, so `cmd <<A <<B` fills A then B.
+   */
+  private consumeHereDocBody(): void {
+    const tok = this.expect(TokenType.HereDocBody);
+    const target = this.pendingHereDocs.shift();
+    if (target) {
+      target.content = tok.value;
     }
   }
 
@@ -117,7 +141,15 @@ export class Parser {
     this.skipNewlinesAndSemicolons();
 
     while (!this.at(TokenType.EOF) && !this.isListTerminator()) {
+      const before = this.pos;
       const cmd = this.parseList();
+
+      // A parse path that consumes nothing would spin here forever. Fail loudly
+      // instead: an unparseable token is a bug report, not an infinite loop.
+      if (this.pos === before) {
+        throw new ParseError("Unexpected token", this.peek());
+      }
+
       commands.push(cmd);
 
       // Consume list terminators
@@ -136,12 +168,13 @@ export class Parser {
   }
 
   private isListTerminator(): boolean {
-    const v = this.peek().value;
+    const tok = this.peek();
     const terminators = ["fi", "done", "esac", "then", "else", "elif", "do", "}", ")", "]]"];
-    if (terminators.includes(v) && (this.peek().type === TokenType.Keyword || this.peek().type === TokenType.Word)) {
+    if (terminators.includes(tok.value) && (tok.type === TokenType.Keyword || tok.type === TokenType.Word)) {
       return true;
     }
-    return this.atAny(TokenType.Operator, ")", ";;");
+    // A closing `}` mid-line tokenizes as an Operator, but still ends the list
+    return this.atAny(TokenType.Operator, ")", ";;", "}");
   }
 
   // ── List: pipeline (&&/|| pipeline)* ───────────────────────────
@@ -209,9 +242,14 @@ export class Parser {
         case "case": return this.parseCase();
         case "function": return this.parseFunctionKeyword();
         case "coproc": return this.parseCoproc();
-        case "{": return this.parseBraceGroup();
         case "[[": return this.parseDoubleSquareBracket();
       }
+    }
+
+    // `{` only tokenizes as a Keyword at command start, so `function f { ... }`
+    // and `coproc NAME { ... }` deliver it as an Operator. Dispatch on the value.
+    if (tok.value === "{" && (tok.type === TokenType.Keyword || tok.type === TokenType.Operator)) {
+      return this.parseBraceGroup();
     }
 
     if (tok.type === TokenType.Operator && tok.value === "(") {
@@ -279,19 +317,9 @@ export class Parser {
       }
     }
 
-    // Collect trailing heredoc bodies
+    // A body may already be here when the command is the last line of input
     while (this.at(TokenType.HereDocBody)) {
-      const hdTok = this.advance();
-      // Attach to the last heredoc redirect that needs a body
-      const lastHeredoc = redirects.findLast(r =>
-        r.op === "<<" || r.op === "<<-"
-      );
-      if (lastHeredoc) {
-        const target = lastHeredoc.target as HereDoc;
-        if (target.type === "HereDoc") {
-          (target as any).content = hdTok.value;
-        }
-      }
+      this.consumeHereDocBody();
     }
 
     const end = this.lastEnd(start);
@@ -340,14 +368,17 @@ export class Parser {
     // For heredoc, create a HereDoc target
     if (opPart === "<<" || opPart === "<<-") {
       const delimTok = this.expect(TokenType.Word);
+      const quote = delimTok.value[0];
+      const quoted = (quote === "'" || quote === '"') && delimTok.value.endsWith(quote) && delimTok.value.length >= 2;
       const target: HereDoc = {
         type: "HereDoc",
-        delimiter: delimTok.value,
+        delimiter: quoted ? delimTok.value.slice(1, -1) : delimTok.value,
         content: "",
         stripTabs: opPart === "<<-",
-        quoted: false, // tokenizer handles this
+        quoted,
         range: { start: delimTok.range.start, end: delimTok.range.end },
       };
+      this.pendingHereDocs.push(target);
       return {
         type: "Redirect",
         fd,
@@ -564,7 +595,7 @@ export class Parser {
   }
 
   private parseBraceGroup(): BraceGroup {
-    const start = this.expect(TokenType.Keyword, "{").range.start;
+    const start = this.expectWord("{").range.start;
     this.skipNewlines();
     const body = this.wrapScript(this.parseCompoundList());
     const end = this.expectWord("}").range.end;
@@ -593,12 +624,14 @@ export class Parser {
       args.push(this.tokenToCompoundWord(this.advance()));
     }
 
+    const redirects = this.parseTrailingRedirects();
+
     return {
       type: "SimpleCommand",
       assignments: [],
       name,
       args,
-      redirects: [],
+      redirects,
       range: { start, end: this.lastEnd(start) },
     };
   }
@@ -653,8 +686,9 @@ export class Parser {
     // Check if next token is a name (not a keyword that starts a command)
     if (this.at(TokenType.Word)) {
       const next = this.tokens[this.pos + 1];
-      if (next && (next.type === TokenType.Keyword && next.value === "{" ||
-          next.type === TokenType.Keyword && ["while", "for", "if", "until", "case"].includes(next.value))) {
+      // `{` after a name is an Operator, not a Keyword — match on value
+      if (next && (next.value === "{" ||
+          (next.type === TokenType.Keyword && ["while", "for", "if", "until", "case"].includes(next.value)))) {
         name = this.advance().value;
       }
     }

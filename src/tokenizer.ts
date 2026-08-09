@@ -270,9 +270,11 @@ export class Tokenizer {
             }
           }
 
+          // Emit the delimiter as written, quotes included, so the parser can
+          // tell `<<EOF` (expands) from `<<'EOF'` (literal).
           this.tokens.push({
             type: TokenType.Word,
-            value: delimiter,
+            value: this.src.slice(delimStart, this.pos),
             range: { start: delimStart, end: this.pos },
           });
 

@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { parseShell } from "../index.ts";
+import { parseShell, parse, ParseError, tokenize, TokenType } from "../index.ts";
 
 function parseCmd(src: string) {
   const script = parseShell(src);
@@ -181,6 +181,103 @@ esac`);
     expect(arg.parts.some((p: any) =>
       p.type === "VariableExpansion" && p.braced === true && p.expression === "NAME:-default"
     )).toBe(true);
+  });
+});
+
+describe("heredoc bodies", () => {
+  test("body is attached to the heredoc target", () => {
+    const script = parseShell("cat <<EOF\nhello world\nEOF\n");
+    const cmd = (script.commands[0]! as any).commands[0];
+    expect(cmd.redirects[0].target.content).toBe("hello world\n");
+  });
+
+  test("each of two heredocs gets its own body", () => {
+    const script = parseShell("cat <<A <<B\nfirst\nA\nsecond\nB\n");
+    const cmd = (script.commands[0]! as any).commands[0];
+    expect(cmd.redirects.map((r: any) => r.target.content)).toEqual(["first\n", "second\n"]);
+  });
+
+  test("quoted delimiter is recorded and stripped", () => {
+    const script = parseShell("cat <<'EOF'\nraw $X\nEOF\n");
+    const target = (script.commands[0]! as any).commands[0].redirects[0].target;
+    expect(target.quoted).toBe(true);
+    expect(target.delimiter).toBe("EOF");
+  });
+
+  test("unquoted delimiter is not marked quoted", () => {
+    const script = parseShell("cat <<EOF\nx\nEOF\n");
+    const target = (script.commands[0]! as any).commands[0].redirects[0].target;
+    expect(target.quoted).toBe(false);
+  });
+
+  test("<<- records stripTabs", () => {
+    const script = parseShell("cat <<-EOF\n\tindented\nEOF\n");
+    const target = (script.commands[0]! as any).commands[0].redirects[0].target;
+    expect(target.stripTabs).toBe(true);
+  });
+});
+
+describe("brace bodies after a name", () => {
+  test("function keyword with brace body", () => {
+    const script = parseShell("function cleanup { rm -f /tmp/x; }");
+    const fn = (script.commands[0]! as any).commands[0];
+    expect(fn.type).toBe("FunctionDef");
+    expect(fn.name).toBe("cleanup");
+    expect(fn.body.type).toBe("BraceGroup");
+  });
+
+  test("named coproc with brace body", () => {
+    const script = parseShell("coproc WORKER { read -r line; }");
+    const co = (script.commands[0]! as any).commands[0];
+    expect(co.type).toBe("Coproc");
+    expect(co.name).toBe("WORKER");
+    expect(co.body.type).toBe("BraceGroup");
+  });
+});
+
+describe("double brackets", () => {
+  test("captures trailing redirects", () => {
+    const script = parseShell("[[ -f x ]] > out.txt");
+    const cmd = (script.commands[0]! as any).commands[0];
+    expect(cmd.redirects.length).toBe(1);
+    expect(cmd.redirects[0].op).toBe(">");
+  });
+});
+
+describe("termination", () => {
+  // Each of these used to spin forever in parseCompoundList
+  const inputs = [
+    "function cleanup { rm -f /tmp/x; }",
+    "cat <<EOF\nhello\nEOF\n",
+    "coproc WORKER { read -r line; }",
+    "echo }",
+    "cmd |",
+    "&& x",
+    "}",
+    ";;",
+  ];
+
+  for (const src of inputs) {
+    test(`terminates on ${JSON.stringify(src)}`, () => {
+      // Either parses or throws — the only failure mode is not returning
+      try {
+        parseShell(src);
+      } catch (e) {
+        expect(e).toBeInstanceOf(ParseError);
+      }
+    });
+  }
+
+  test("a body with no heredoc to claim it is dropped, not spun on", () => {
+    const tokens = tokenize("echo hi");
+    tokens.splice(0, 0, { type: TokenType.HereDocBody, value: "orphan\n", range: { start: 0, end: 0 } });
+    const script = parse(tokens);
+    expect(script.commands.length).toBe(1);
+  });
+
+  test("a token no rule can consume raises ParseError rather than looping", () => {
+    // Leading `&` reaches parseCommand, which consumes nothing — the guard fires
+    expect(() => parseShell("& echo hi")).toThrow(ParseError);
   });
 });
 
