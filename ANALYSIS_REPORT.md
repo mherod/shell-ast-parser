@@ -9,10 +9,10 @@ forever in `parseCompoundList`. That was not in the original report, which
 concluded the parser was "fundamentally sound".
 
 Findings 1–5 are defects the parser had, 6–10 are constructs it silently dropped
-on the floor, and 11–26 are places where the AST asserted things about the
+on the floor, and 11–27 are places where the AST asserted things about the
 source that were not true.
 
-Status: all findings below are fixed. `bun test` → 269 pass / 0 fail. `tsc --noEmit` → clean.
+Status: all findings below are fixed. `bun test` → 283 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -501,6 +501,43 @@ pretending they are the same:
 `[ -f x ]` but not `test -f x`. Both are recognised only as a command name;
 `echo test` keeps the word and `test() { … }` is still a function definition.
 
+### 27. `=~` operands were pattern words — MEDIUM
+**Files:** `src/regex.ts` (new), `src/ast.ts`, `src/tokenizer.ts`, `src/parser.ts`
+
+The right operand of `=~` was a `CompoundWord`, and worse, one decomposed as a
+**glob**: `^a.*b$` came out as `Word("^a.")`, a wildcard `GlobPattern`, and
+`Word("b$")`. Regex and glob syntax overlap without agreeing, so those parts
+described a pattern the shell never matches.
+
+Two shell rules had also swallowed the operand before it could be read.
+`(`, `)` and `|` after `=~` belong to the regex, but the tokenizer had already
+handed the parens to the test grammar, so `[[ $s =~ (a|b) ]]` lost its group
+entirely and `^(foo|bar)$` parsed as a lone anchor.
+
+**Fix:** `src/regex.ts` parses extended regular expressions — alternation,
+concatenation, `*` `+` `?` `{n,m}` quantifiers, groups, bracket expressions,
+`.`, anchors and escapes — and `TestBinary` gains `regex`, null for every other
+operator. The pattern is read from the token text rather than the glob-split
+parts. The tokenizer reads the operand after `=~` as one word, tracking paren
+depth so a space or `|` inside a group stays in the pattern, which is exactly
+why bash requires the parens to write either.
+
+Two shell-specific rules the AST now carries, neither visible in the regex text
+alone:
+
+- **A quoted run matches literally.** `[[ $s =~ "a.b" ]]` looks for three
+  characters, and yields a `RegexLiteral` rather than an any-char node.
+- **An expansion supplies its pattern at runtime**, so `$re` becomes a
+  `RegexExpansion` holding the parsed word part rather than a guess.
+
+Escapes stay unresolved in a `RegexEscape`: `\.` is a literal dot, but `\w` and
+`\1` are matcher extensions whose meaning is not POSIX, and resolving them here
+would assert something the shell does not.
+
+A parser bug surfaced while testing this: `[[ $s =~ ]]` consumed the closing
+`]]` as the operand, because the binary-operator branch took the next token
+unconditionally. It now stops at `]]`.
+
 ---
 
 ## Original findings that did not hold
@@ -527,12 +564,13 @@ for code that lives in `parser.ts`.
   `readonly`, `typeset`, `let`, `[` and `test` are recognised by name; a
   user-defined function of the same name would change what they mean at
   runtime.
-- **`=~` regex operands are words, not regex syntax.** `[[ $s =~ ^a.*b$ ]]`
-  keeps the right operand as a pattern word; its own grammar is not parsed.
+- **Regex escapes are not interpreted.** `RegexEscape` records `\w` and `\1`
+  without deciding whether the matcher supports them; only POSIX ERE structure
+  is parsed.
 
 ## Regression coverage added
 
-`src/parser.test.ts`, 269 tests total: heredoc content attachment, two-heredoc
+`src/parser.test.ts`, 283 tests total: heredoc content attachment, two-heredoc
 ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
 `[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
 detached-paren disambiguation, unterminated), background on pipelines and lists

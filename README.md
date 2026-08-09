@@ -110,6 +110,15 @@ by `style`. Each follows its own grammar — the keyword form joins with `&&` an
 `||` and compares with `<` and `>`, while the builtin joins with `-a` and `-o`
 and lets `<` redirect, exactly as the shell does.
 
+The operand of `=~` parses as an extended regular expression, honouring the two
+rules that are invisible in the pattern text: a quoted run matches literally,
+and an expansion supplies its pattern at runtime.
+
+```ts
+parseShell('[[ $s =~ ^(a|b)+$ ]]');   // anchors around a quantified group
+parseShell('[[ $s =~ "a.b" ]]');      // a literal, not any-char
+```
+
 Words resolve into parts: literals, variable expansions (`$x`, `${x:-d}`),
 command substitutions (`$( )` and backticks), arithmetic (`$(( ))`), process
 substitutions (`<( )`, `>( )`), and glob patterns.
@@ -133,8 +142,9 @@ Assignments cover scalars, arrays (`X=(a b)`), appends (`X+=y`), subscripts
   `readonly`, `typeset`, `let`, `[` and `test` are recognised by name, so a
   user-defined function of the same name would change what they mean at
   runtime.
-- **`=~` operands are words, not parsed regex.** `[[ $s =~ ^a.*b$ ]]` keeps the
-  right side as a pattern word.
+- **Regex escapes are not interpreted.** `RegexEscape` records `\w` or `\1`
+  without deciding whether your matcher supports them; only POSIX ERE structure
+  is parsed.
 
 ## Development
 

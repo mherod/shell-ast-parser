@@ -3,12 +3,13 @@ import type {
   CompoundWord, WordPart, Redirect, HereDoc, Assignment, ArrayLiteral, Range, QuoteContext,
   GlobBracketMember,
   IfClause, ForClause, ArithmeticForClause, ArithmeticCommand, ArithmeticExpr,
-  LetCommand, LetExpression, TestCommand, TestExpr,
+  LetCommand, LetExpression, TestCommand, TestExpr, RegexNode,
   WhileClause, UntilClause, CaseClause, CaseItem,
   Subshell, BraceGroup, FunctionDef, Comment, Coproc,
 } from "./ast.ts";
 import { tokenize, readHereDocHeader, skipHereDocBodies, readExpansionExtent, splitArithmeticClauses, EXTGLOB_LEADS, type Token, TokenType } from "./tokenizer.ts";
 import { parseArithmetic } from "./arithmetic.ts";
+import { parseRegex } from "./regex.ts";
 
 /** Single-operand conditional operators, from bash's test builtin */
 const TEST_UNARY_OPS = new Set([
@@ -1228,7 +1229,15 @@ export class Parser {
     if (next !== null && TEST_BINARY_OPS.has(next) && cursor.index + 1 < words.length) {
       cursor.index++;
       const right = words[cursor.index++]!;
-      return { type: "TestBinary", op: next, left: word, right, range: { start: word.range.start, end: right.range.end } };
+      return {
+        type: "TestBinary",
+        op: next,
+        left: word,
+        right,
+        // Never a regex: the builtin has no `=~`, only the `[[ … ]]` keyword does
+        regex: null,
+        range: { start: word.range.start, end: right.range.end },
+      };
     }
 
     return { type: "TestValue", word, range: word.range };
@@ -1293,8 +1302,25 @@ export class Parser {
 
     if (isBinary) {
       this.advance();
-      const right = this.tokenToCompoundWord(this.advance());
-      return { type: "TestBinary", op: opTok.value, left: word, right, range: { start: tok.range.start, end: right.range.end } };
+
+      // `[[ $s =~ ]]` has no operand; the closing `]]` is not one
+      const rightTok = this.atWord("]]") || this.at(TokenType.EOF) ? null : this.advance();
+      const right = rightTok === null
+        ? { type: "CompoundWord" as const, parts: [], range: { start: opTok.range.end, end: opTok.range.end } }
+        : this.tokenToCompoundWord(rightTok);
+
+      return {
+        type: "TestBinary",
+        op: opTok.value,
+        left: word,
+        right,
+        // The operand's parts were split as a glob, so the pattern is read from
+        // the token text instead
+        regex: rightTok !== null && opTok.value === "=~"
+          ? this.parseRegexText(rightTok.value, rightTok.range.start)
+          : null,
+        range: { start: tok.range.start, end: right.range.end },
+      };
     }
 
     return { type: "TestValue", word, range: tok.range };
@@ -1668,22 +1694,43 @@ export class Parser {
     return parts;
   }
 
+  /** Parse the operand of `=~` as an extended regular expression */
+  private parseRegexText(text: string, offset: number): RegexNode | null {
+    return parseRegex(text, offset, {
+      readExpansion: (raw, pos) => this.readExpansionPart(raw, pos, offset),
+      readBracket: (raw, pos) => {
+        const close = findBracketClose(raw, pos);
+        if (close === -1) return null;
+
+        const negated = raw[pos + 1] === "!" || raw[pos + 1] === "^";
+        const innerStart = pos + 1 + (negated ? 1 : 0);
+        return {
+          negated,
+          members: parseBracketMembers(raw.slice(innerStart, close), offset + innerStart),
+          next: close + 1,
+        };
+      },
+    });
+  }
+
+  /** Resolve a `$…` expansion inside embedded syntax into a real word part */
+  private readExpansionPart(raw: string, pos: number, offset: number): { part: WordPart; next: number } | null {
+    const extent = readExpansionExtent(raw, pos);
+    if (extent === null) return null;
+
+    const range = { start: offset + pos, end: offset + extent };
+    const part = this.parseWordParts(raw.slice(pos, extent), range, offset + pos)[0];
+
+    return part === undefined ? null : { part, next: extent };
+  }
+
   /**
    * Parse arithmetic text, resolving any `$…` operands through the same word
    * machinery the rest of the parser uses, so `$(( $(f) + 1 ))` keeps a real
    * `CommandSubstitution` rather than a string.
    */
   private parseArithmeticText(text: string, offset: number): ArithmeticExpr | null {
-    return parseArithmetic(text, offset, (raw, pos) => {
-      const extent = readExpansionExtent(raw, pos);
-      if (extent === null) return null;
-
-      const slice = raw.slice(pos, extent);
-      const range = { start: offset + pos, end: offset + extent };
-      const part = this.parseWordParts(slice, range, offset + pos)[0];
-
-      return part === undefined ? null : { part, next: extent };
-    });
+    return parseArithmetic(text, offset, (raw, pos) => this.readExpansionPart(raw, pos, offset));
   }
 
   /**

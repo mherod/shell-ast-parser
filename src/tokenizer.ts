@@ -263,6 +263,8 @@ export class Tokenizer {
   private inDeclarationCommand: boolean = false;
   /** Whether we are between `[[` and `]]`, where `<` and `>` compare strings */
   private inTestCommand: boolean = false;
+  /** Whether the next word is the regex operand of `=~` */
+  private afterRegexOperator: boolean = false;
 
   /** Whether the last non-whitespace token allows a keyword next */
   private get atCommandStart(): boolean {
@@ -301,6 +303,16 @@ export class Tokenizer {
       if (ch === "#") {
         this.readComment();
         continue;
+      }
+
+      // The operand of `=~` is a regex, so `(`, `)` and `|` belong to it rather
+      // than to the surrounding test expression
+      if (this.afterRegexOperator) {
+        this.afterRegexOperator = false;
+        if (!this.src.startsWith("]]", this.pos)) {
+          this.readRegexWord();
+          continue;
+        }
       }
 
       if (ch === "<" || ch === ">") {
@@ -726,6 +738,43 @@ export class Tokenizer {
     if (wasCommandStart && DECLARATION_BUILTINS.has(value)) {
       this.inDeclarationCommand = true;
     }
+    if (this.inTestCommand && value === "=~") {
+      this.afterRegexOperator = true;
+    }
+  }
+
+  /**
+   * Read the regex following `=~` as one word. Parentheses group, and inside
+   * them spaces are part of the pattern — `[[ $s =~ (a b)+ ]]` is one operand,
+   * which is why bash needs the parens to write a space or `|` at all.
+   */
+  private readRegexWord(): void {
+    const start = this.pos;
+    let depth = 0;
+
+    while (this.pos < this.src.length) {
+      const ch = this.src[this.pos]!;
+
+      if (ch === "\n") break;
+      if (ch === "\\") { this.pos += 2; continue; }
+      if (ch === "'" || ch === '"') { this.skipQuoted(ch); continue; }
+
+      if (ch === "(") depth++;
+      else if (ch === ")" && depth > 0) depth--;
+      // Whitespace alone ends the operand: a `]]` inside it belongs to the
+      // pattern, as in `[[:digit:]]`, and the shell needs a space before the
+      // real closing `]]` regardless
+      else if (depth === 0 && isWhitespace(ch)) break;
+
+      this.pos++;
+    }
+
+    this.tokens.push({
+      type: TokenType.Word,
+      value: this.src.slice(start, this.pos),
+      range: { start, end: this.pos },
+    });
+    this.atCommandStart = false;
   }
 
   private lastTokenIs(type: TokenType, value: string): boolean {

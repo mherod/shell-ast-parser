@@ -1257,6 +1257,113 @@ describe("test expressions", () => {
   });
 });
 
+describe("=~ regex operands", () => {
+  const command = (src: string) => (parseShell(src).commands[0] as any).commands[0];
+
+  /** Compact rendering so structure is visible at a glance */
+  const show = (n: any): string => {
+    switch (n?.type) {
+      case "RegexLiteral": return JSON.stringify(n.value);
+      case "RegexAny": return ".";
+      case "RegexAnchor": return n.kind === "start" ? "^" : "$";
+      case "RegexGroup": return `(${show(n.body)})`;
+      case "RegexClass":
+        return `[${n.negated ? "!" : ""}${n.members.map((m: any) =>
+          m.type === "GlobRange" ? `${m.from}-${m.to}` :
+          m.type === "GlobClass" ? `${m.kind}:${m.name}` : m.value).join(",")}]`;
+      case "RegexQuantifier": return `${show(n.operand)}{${n.min},${n.max ?? ""}}`;
+      case "RegexAlternation": return `alt(${n.alternatives.map(show).join(" | ")})`;
+      case "RegexSequence": return `seq(${n.items.map(show).join(" ")})`;
+      case "RegexEscape": return `esc(${n.char})`;
+      case "RegexExpansion": return `<${n.part.type}>`;
+      default: return "null";
+    }
+  };
+  const regex = (pattern: string) => show(command(`[[ $s =~ ${pattern} ]]`).expression.regex);
+
+  test("anchors, literals and any", () => {
+    expect(regex("^a.b$")).toBe('seq(^ "a" . "b" $)');
+  });
+
+  test("quantifiers, including bounds", () => {
+    expect(regex("a*")).toBe('"a"{0,}');
+    expect(regex("a+")).toBe('"a"{1,}');
+    expect(regex("a?")).toBe('"a"{0,1}');
+    expect(regex("a{2}")).toBe('"a"{2,2}');
+    expect(regex("a{2,}")).toBe('"a"{2,}');
+    expect(regex("a{2,3}")).toBe('"a"{2,3}');
+  });
+
+  test("a quantifier binds only the character before it", () => {
+    expect(regex("ab*")).toBe('seq("a" "b"{0,})');
+  });
+
+  test("groups and alternation", () => {
+    expect(regex("(a|b)")).toBe('(alt("a" | "b"))');
+    expect(regex("^(foo|bar)$")).toBe('seq(^ (alt("foo" | "bar")) $)');
+    expect(regex("(ab)+c")).toBe('seq(("ab"){1,} "c")');
+  });
+
+  test("character classes reuse the bracket syntax", () => {
+    expect(regex("[abc]+")).toBe("[a,b,c]{1,}");
+    expect(regex("[a-z0-9_]")).toBe("[a-z,0-9,_]");
+    expect(regex("[^a-z]")).toBe("[!a-z]");
+    expect(regex("[[:digit:]]{3}")).toBe("[class:digit]{3,3}");
+  });
+
+  test("escapes are kept unresolved", () => {
+    // `\.` is a literal dot and `\w` is a matcher extension — the difference is
+    // the consumer's to decide, so neither is resolved here
+    expect(regex("\\.")).toBe("esc(.)");
+    expect(regex("\\w+")).toBe("esc(w){1,}");
+    expect(regex("a\\.b")).toBe('seq("a" esc(.) "b")');
+  });
+
+  test("a quoted run matches literally, as bash requires", () => {
+    expect(regex('"a.b"')).toBe('"a.b"');
+    expect(regex("'x*'")).toBe('"x*"');
+  });
+
+  test("an expansion supplies its pattern at runtime", () => {
+    expect(regex("$re")).toBe("<VariableExpansion>");
+    expect(regex("^$prefix.*")).toBe("seq(^ <VariableExpansion> .{0,})");
+    expect(command("[[ $s =~ $(f) ]]").expression.regex.part.type).toBe("CommandSubstitution");
+  });
+
+  test("parens let a space or | into the operand", () => {
+    expect(regex("(a b)+")).toBe('("a b"){1,}');
+  });
+
+  test("only =~ gets a regex", () => {
+    expect(command("[[ $x == y ]]").expression.regex).toBeNull();
+    expect(command("[ $x = y ]").expression.regex).toBeNull();
+  });
+
+  test("the operand word is still available", () => {
+    const right = command("[[ $s =~ ^(a|b)$ ]]").expression.right;
+    expect(right.parts.map((p: any) => p.value).join("")).toBe("^(a|b)$");
+  });
+
+  test("node ranges index the source", () => {
+    const src = "[[ $s =~ ^ab$ ]]";
+    const node = command(src).expression.regex.items[1];
+    expect(src.slice(node.range.start, node.range.end)).toBe("ab");
+  });
+
+  test("a missing operand is not the closing ]]", () => {
+    const binary = command("[[ $s =~ ]]").expression;
+    expect(binary.type).toBe("TestBinary");
+    expect(binary.right.parts.length).toBe(0);
+    expect(binary.regex).toBeNull();
+  });
+
+  test("malformed patterns do not hang", () => {
+    for (const src of ["[[ $s =~ ( ]]", "[[ $s =~ ) ]]", "[[ $s =~ [ ]]", "[[ $s =~ * ]]", "[[ $s =~ a{ ]]"]) {
+      expect(() => parseShell(src)).not.toThrow();
+    }
+  });
+});
+
 describe("the [ ] and test builtin", () => {
   const command = (src: string) => (parseShell(src).commands[0] as any).commands[0];
   const text = (word: any) => word.parts.map((p: any) => p.value ?? p.expression ?? p.type).join("");

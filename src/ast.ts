@@ -360,8 +360,102 @@ export interface TestBinary {
   op: string;
   left: CompoundWord;
   right: CompoundWord;
+  /**
+   * For `=~`, the right operand parsed as an extended regular expression.
+   * Null for every other operator, and when the pattern does not fit the
+   * grammar — `right` always holds the operand either way.
+   */
+  regex: RegexNode | null;
   range: Range;
 }
+
+// ── Regular expressions ────────────────────────────────────────────
+
+export interface RegexLiteral {
+  type: "RegexLiteral";
+  value: string;
+  range: Range;
+}
+
+/** `.` */
+export interface RegexAny {
+  type: "RegexAny";
+  range: Range;
+}
+
+/** `^` or `$` */
+export interface RegexAnchor {
+  type: "RegexAnchor";
+  kind: "start" | "end";
+  range: Range;
+}
+
+/** `(…)` — capturing, as all ERE groups are */
+export interface RegexGroup {
+  type: "RegexGroup";
+  body: RegexNode;
+  range: Range;
+}
+
+/** `[…]`, the same bracket syntax globs use */
+export interface RegexClass {
+  type: "RegexClass";
+  negated: boolean;
+  members: GlobBracketMember[];
+  range: Range;
+}
+
+/** `*`, `+`, `?`, `{n,m}` — `max` is null when unbounded */
+export interface RegexQuantifier {
+  type: "RegexQuantifier";
+  operand: RegexNode;
+  min: number;
+  max: number | null;
+  range: Range;
+}
+
+/** `a|b` */
+export interface RegexAlternation {
+  type: "RegexAlternation";
+  alternatives: RegexNode[];
+  range: Range;
+}
+
+/** Concatenation */
+export interface RegexSequence {
+  type: "RegexSequence";
+  items: RegexNode[];
+  range: Range;
+}
+
+/**
+ * A backslash escape, kept unresolved: `\.` is a literal dot, but `\w` and
+ * `\1` are extensions whose meaning depends on the matcher.
+ */
+export interface RegexEscape {
+  type: "RegexEscape";
+  char: string;
+  range: Range;
+}
+
+/** An expansion supplying part of the pattern at runtime */
+export interface RegexExpansion {
+  type: "RegexExpansion";
+  part: WordPart;
+  range: Range;
+}
+
+export type RegexNode =
+  | RegexLiteral
+  | RegexAny
+  | RegexAnchor
+  | RegexGroup
+  | RegexClass
+  | RegexQuantifier
+  | RegexAlternation
+  | RegexSequence
+  | RegexEscape
+  | RegexExpansion;
 
 /**
  * `&&` and `||` come from `[[ … ]]`; `-a` and `-o` from `[ … ]` and `test`,
