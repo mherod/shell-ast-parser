@@ -463,6 +463,136 @@ describe("append assignments", () => {
   });
 });
 
+describe("quoting", () => {
+  const parts = (src: string) => (parseShell(src).commands[0] as any).commands[0].args[0].parts;
+  const one = (src: string) => {
+    const p = parts(src);
+    expect(p.length).toBe(1);
+    return p[0];
+  };
+
+  describe("single quotes suppress every expansion", () => {
+    test("command substitution is inert text", () => {
+      const part = one("echo '$(rm -rf /)'");
+      expect(part.type).toBe("Word");
+      expect(part.value).toBe("$(rm -rf /)");
+      expect(part.quoted).toBe("single");
+    });
+
+    test("variable expansion is inert text", () => {
+      expect(one("echo '$NAME'").value).toBe("$NAME");
+    });
+
+    test("backticks are inert text", () => {
+      expect(one("echo '`date`'").value).toBe("`date`");
+    });
+
+    test("a backslash is an ordinary character", () => {
+      expect(one("echo '\\n'").value).toBe("\\n");
+    });
+  });
+
+  describe("double quotes expand some things", () => {
+    test("variable expansion still applies", () => {
+      const part = one('echo "$NAME"');
+      expect(part.type).toBe("VariableExpansion");
+      expect(part.quoted).toBe("double");
+    });
+
+    test("command substitution still applies", () => {
+      expect(one('echo "$(date)"').type).toBe("CommandSubstitution");
+    });
+
+    test("process substitution does not", () => {
+      const part = one('echo "a<(b)c"');
+      expect(part.type).toBe("Word");
+      expect(part.value).toBe("a<(b)c");
+    });
+  });
+
+  test("quote characters are stripped from the value", () => {
+    expect(one("echo 'hello'").value).toBe("hello");
+    expect(one('echo "hello"').value).toBe("hello");
+  });
+
+  test("each quoted segment of a word is reported separately", () => {
+    expect(parts("echo a\"b\"'c'd").map((p: any) => [p.value, p.quoted])).toEqual([
+      ["a", null],
+      ["b", "double"],
+      ["c", "single"],
+      ["d", null],
+    ]);
+  });
+
+  test("empty quotes are an empty word, not nothing", () => {
+    expect(one("echo ''").value).toBe("");
+    expect(one("echo ''").quoted).toBe("single");
+  });
+
+  test("a quoted expansion does not also emit an empty word", () => {
+    expect(parts('echo "$NAME"').length).toBe(1);
+  });
+
+  describe("escapes", () => {
+    test("unquoted backslash makes the next character literal", () => {
+      expect(one("echo \\$NOT").value).toBe("$NOT");
+    });
+
+    test("double quotes escape the five special characters", () => {
+      expect(one('echo "\\$NOT"').value).toBe("$NOT");
+      expect(one('echo "a\\"b"').value).toBe('a"b');
+    });
+
+    test("other backslashes survive inside double quotes", () => {
+      expect(one('echo "a\\nb"').value).toBe("a\\nb");
+    });
+  });
+
+  describe("$'…' resolves escapes", () => {
+    test("named escapes", () => {
+      expect(one("echo $'a\\tb\\nc'").value).toBe("a\tb\nc");
+    });
+
+    test("hex, octal and unicode", () => {
+      expect(one("echo $'\\x41\\102\\u00e9'").value).toBe("ABé");
+    });
+
+    test("an unknown escape keeps its backslash", () => {
+      expect(one("echo $'\\q'").value).toBe("\\q");
+    });
+
+    test("reported as single-quoted — it expands nothing", () => {
+      expect(one("echo $'x'").quoted).toBe("single");
+    });
+  });
+
+  test("$\"…\" behaves like double quotes", () => {
+    expect(one('echo $"$NAME"').type).toBe("VariableExpansion");
+  });
+
+  describe("ranges", () => {
+    test("each part indexes the source it came from", () => {
+      const src = 'echo pre$NAME"post $X"';
+      expect(parts(src).map((p: any) => src.slice(p.range.start, p.range.end)))
+        .toEqual(["pre", "$NAME", "post ", "$X"]);
+    });
+
+    test("an assignment value is offset past the =", () => {
+      const src = "TODAY=$(date +%F)";
+      const sub = (parseShell(src).commands[0] as any).commands[0].assignments[0].value.parts[0];
+      expect(src.slice(sub.range.start, sub.range.end)).toBe("$(date +%F)");
+      const inner = sub.body.commands[0].commands[0];
+      expect(src.slice(inner.range.start, inner.range.end)).toBe("date +%F");
+    });
+  });
+
+  test("unterminated quotes do not hang", () => {
+    for (const src of ["echo 'x", 'echo "x', "echo $'x"]) {
+      expect(() => parseShell(src)).not.toThrow();
+    }
+  });
+});
+
 describe("fixture: sample.sh", () => {
   test("parses the full fixture without throwing", async () => {
     const src = await Bun.file("fixtures/sample.sh").text();

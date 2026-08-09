@@ -8,10 +8,11 @@ findings are re-adjudicated at the bottom.
 forever in `parseCompoundList`. That was not in the original report, which
 concluded the parser was "fundamentally sound".
 
-Findings 1–5 are defects the parser had; 6–10 are constructs it silently dropped
-on the floor.
+Findings 1–5 are defects the parser had, 6–10 are constructs it silently dropped
+on the floor, and 11–12 are places where the AST asserted things about the
+source that were not true.
 
-Status: all findings below are fixed. `bun test` → 100 pass / 0 fail. `tsc --noEmit` → clean.
+Status: all findings below are fixed. `bun test` → 122 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -148,6 +149,54 @@ rejected the trailing `+`. Appends were invisible to consumers.
 and the bare `VAR+=` form. `a+b=c` and `+=x` remain words — neither is a valid
 assignment name.
 
+### 11. The word scanner was quote-blind — HIGH
+**Files:** `src/parser.ts` (`parseWordParts`), `src/ast.ts`
+
+`parseWordParts` scanned for `$`, backticks and `<(` with no idea whether it was
+inside quotes, so it reported expansions the shell would never perform:
+
+```
+echo '$(rm -rf /)'   → CommandSubstitution running `rm -rf /`
+echo '$NAME'         → VariableExpansion
+```
+
+For a static-analysis consumer this is the worst kind of wrong: inert text
+reported as a live command. The quote characters were also left in the adjacent
+`Word` values (`Word("'")`, `Word("'")`) rather than stripped, so nothing
+downstream could correct for it.
+
+Escapes were not handled either — `"\$NOT_EXPANDED"` in the fixture was read as
+a real expansion of `$NOT_EXPANDED`.
+
+**Fix:** the scanner now tracks quote state.
+
+- Single quotes: everything is literal, including backslashes.
+- Double quotes: `$` and backtick expand; `<(` does not; the five escapable
+  characters (`$`, `` ` ``, `"`, `\`, newline) are resolved and any other
+  backslash stays literal.
+- Unquoted: `\c` yields a literal `c`, and `\<newline>` is a line continuation.
+- `$'…'` resolves ANSI-C escapes (`\n`, `\t`, `\xHH`, octal, `\uHHHH`); `$"…"`
+  behaves as double quotes.
+
+Quote characters are stripped from values, and the quoting is preserved instead
+on a new `quoted: QuoteContext` field (`"single" | "double" | null`) on each
+part — quoting drives word splitting and globbing, so discarding it would lose
+information consumers need. A word's segments are reported separately:
+`a"b"'c'd` → four `Word` parts, each with its own context.
+
+### 12. Word part ranges were the whole token — MEDIUM
+**File:** `src/parser.ts`, `parseWordParts`
+
+Every part carried the enclosing token's range, marked `// approximate` in the
+source. Rewriting the scanner made real ranges nearly free, so parts now index
+their own source text: for `echo pre$NAME"post $X"` the four parts slice back to
+`pre`, `$NAME`, `post `, `$X`.
+
+This also fixes a bug introduced by finding 8: `parseWordParts` received the
+token range even when parsing an assignment's *value*, which starts after the
+`=`. Substitution bodies inside `TODAY=$(date +%F)` were offset by the width of
+`TODAY=`. The base offset is now passed explicitly.
+
 ---
 
 ## Original findings that did not hold
@@ -170,48 +219,34 @@ for code that lives in `parser.ts`.
 
 ## Known gaps
 
-### `parseWordParts` is quote-blind — the biggest remaining correctness issue
-
-Expansions are recognised inside single quotes, where the shell treats them as
-literal text:
-
-```
-echo '$NAME'      → [Word("'"), VariableExpansion(NAME), Word("'")]
-echo '$(rm -rf /)' → [Word("'"), CommandSubstitution(rm -rf /), Word("'")]
-```
-
-The second line matters for any consumer doing static analysis: a quoted,
-inert string is reported as a command substitution that runs `rm -rf /`. The
-quote characters are also kept in the adjacent `Word` values rather than being
-stripped, so no consumer can compensate by inspecting them.
-
-This predates the work here — `'$NAME'` behaved this way before any of these
-changes — but finding 9 does add one case to it: `"<(x)"` in double quotes is
-now read as a process substitution. Fixing it means tracking quote state while
-scanning a word, including backslash escapes in double quotes and `$'...'`
-ANSI-C quoting. It is a contained change to one function, and it is the next
-thing worth doing.
-
-### Smaller
-
+- **The tokenizer is still quote-blind when finding token boundaries.** Finding
+  11 fixed the parser's scanner, but `readDollar` counts parens without tracking
+  quotes, so `$(grep ")" file)` ends the substitution at the quoted `)`. The
+  same applies to `${…}` containing a `}`. Fixing it means teaching
+  `readDollar`/`readParenGroup` the same quote states the parser now knows.
 - **Arrays in argument position.** `declare -a X=(1 2)` still splits into a
   command plus a subshell — only *leading* assignments are parsed as arrays.
   Handling it means special-casing the declaration builtins (`declare`, `local`,
   `export`, `typeset`), which is arguably the consumer's job.
 - **Subscripted assignment.** `ITEMS[0]=x` tokenizes as a `Word`; the name
   pattern allows no subscript.
-- **Quotes inside substitution capture.** The `$( )` scanner counts parens
-  without tracking quotes, so `$(grep ")" file)` closes early. Same root cause
-  as the quote-blindness above, in the tokenizer rather than the parser.
+- **`GlobPattern` has no producer.** Like `ProcessSubstitution` before finding
+  9, the type exists but glob characters stay inside `Word` values. Now that
+  quoting is tracked, this is implementable — `*` is a glob unquoted and a
+  literal inside quotes — but it needs a decision about whether bracket
+  expressions and extglob are in scope.
 
 ## Regression coverage added
 
-`src/parser.test.ts`, 100 tests total: heredoc content attachment, two-heredoc
+`src/parser.test.ts`, 122 tests total: heredoc content attachment, two-heredoc
 ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
 `[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
 detached-paren disambiguation, unterminated), background on pipelines and lists
 and inside loop bodies, substitution bodies for `$()` and backticks including
 nesting and absolute range mapping, process substitution in both directions
 including adjacent literals and nesting inside `$()`, `+=` on scalars and arrays
-with the non-assignment forms held to `Word`, and a `termination` block
-asserting that eight previously-hanging inputs return.
+with the non-assignment forms held to `Word`, quoting (expansion suppression in
+single quotes, `<(` suppression in double quotes, per-segment quote context,
+escapes, `$'…'` and `$"…"`, empty quoted words, unterminated quotes, per-part
+and assignment-value ranges), and a `termination` block asserting that eight
+previously-hanging inputs return.

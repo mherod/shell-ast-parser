@@ -6,9 +6,19 @@ export interface Range {
 
 // ── Leaf / atom nodes ──────────────────────────────────────────────
 
+/**
+ * Which quotes enclosed a word part in the source. Quoting decides whether the
+ * shell expands the text and whether the result is split into fields, so it has
+ * to survive into the AST — the quote characters themselves do not appear in
+ * `Word.value`. `$'…'` is reported as "single": it expands nothing either.
+ */
+export type QuoteContext = "single" | "double" | null;
+
 export interface Word {
   type: "Word";
+  /** literal text: quotes removed, escapes resolved */
   value: string;
+  quoted: QuoteContext;
   range: Range;
 }
 
@@ -17,6 +27,7 @@ export interface VariableExpansion {
   /** e.g. "NAME", "#NAME", "NAME:-default" */
   expression: string;
   braced: boolean;
+  quoted: QuoteContext;
   range: Range;
 }
 
@@ -25,12 +36,14 @@ export interface CommandSubstitution {
   /** $(…) vs `…` */
   backtick: boolean;
   body: Script;
+  quoted: QuoteContext;
   range: Range;
 }
 
 export interface ArithmeticExpansion {
   type: "ArithmeticExpansion";
   expression: string;
+  quoted: QuoteContext;
   range: Range;
 }
 

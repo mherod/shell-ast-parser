@@ -1,10 +1,61 @@
 import type {
   Script, Command, SimpleCommand, Pipeline, ListItem,
-  CompoundWord, WordPart, Redirect, HereDoc, Assignment, ArrayLiteral, Range,
+  CompoundWord, WordPart, Redirect, HereDoc, Assignment, ArrayLiteral, Range, QuoteContext,
   IfClause, ForClause, WhileClause, UntilClause, CaseClause, CaseItem,
   Subshell, BraceGroup, FunctionDef, Comment, Coproc,
 } from "./ast.ts";
 import { tokenize, type Token, TokenType } from "./tokenizer.ts";
+
+const ANSI_C_ESCAPES: Record<string, string> = {
+  a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f",
+  n: "\n", r: "\r", t: "\t", v: "\v",
+  "\\": "\\", "'": "'", '"': '"', "?": "?",
+};
+
+/**
+ * Read the body of a `$'…'` string, starting just past the opening quote.
+ * Unlike every other quoting form, these escapes stand for control characters.
+ */
+function readAnsiCString(raw: string, start: number): { value: string; next: number } {
+  let i = start;
+  let value = "";
+
+  while (i < raw.length && raw[i] !== "'") {
+    if (raw[i] !== "\\" || i + 1 >= raw.length) {
+      value += raw[i];
+      i++;
+      continue;
+    }
+
+    const esc = raw[i + 1]!;
+    const simple = ANSI_C_ESCAPES[esc];
+    if (simple !== undefined) {
+      value += simple;
+      i += 2;
+    } else if (esc === "x" || esc === "u" || esc === "U") {
+      const width = esc === "x" ? 2 : esc === "u" ? 4 : 8;
+      const digits = raw.slice(i + 2, i + 2 + width).match(/^[0-9a-fA-F]+/)?.[0] ?? "";
+      if (digits.length > 0) {
+        value += String.fromCodePoint(parseInt(digits, 16));
+        i += 2 + digits.length;
+      } else {
+        value += esc;
+        i += 2;
+      }
+    } else if (esc >= "0" && esc <= "7") {
+      const digits = raw.slice(i + 1, i + 4).match(/^[0-7]+/)![0];
+      value += String.fromCharCode(parseInt(digits, 8));
+      i += 1 + digits.length;
+    } else {
+      // Not an escape sequence: the backslash stands for itself
+      value += "\\" + esc;
+      i += 2;
+    }
+  }
+
+  if (i < raw.length) i++; // skip closing '
+  return { value, next: i };
+}
 
 /**
  * Read a parenthesised body, starting at the index of the opening paren.
@@ -408,7 +459,10 @@ export class Parser {
       type: "Assignment",
       name,
       append,
-      value: rawValue.length > 0 ? this.rawToCompoundWord(rawValue, tok.range) : null,
+      // The value starts after the `=`, so its parts are offset from the token
+      value: rawValue.length > 0
+        ? this.rawToCompoundWord(rawValue, { start: tok.range.start + eqIdx + 1, end: tok.range.end }, tok.range.start + eqIdx + 1)
+        : null,
       range: tok.range,
     };
   }
@@ -806,8 +860,8 @@ export class Parser {
     };
   }
 
-  private rawToCompoundWord(raw: string, range: { start: number; end: number }): CompoundWord {
-    const parts = this.parseWordParts(raw, range);
+  private rawToCompoundWord(raw: string, range: Range, offset: number = range.start): CompoundWord {
+    const parts = this.parseWordParts(raw, range, offset);
     return {
       type: "CompoundWord",
       parts,
@@ -815,18 +869,34 @@ export class Parser {
     };
   }
 
-  /** Break a raw token string into WordParts (expansions, globs, literals) */
-  private parseWordParts(raw: string, range: { start: number; end: number }): WordPart[] {
+  /**
+   * Break a raw token string into WordParts (expansions, quotes, literals).
+   *
+   * `offset` is the absolute source position of `raw[0]`, which is not always
+   * the start of the token: an assignment passes only the text after the `=`.
+   *
+   * Quoting is tracked as it scans, because it decides what is an expansion at
+   * all: `'$(rm -rf /)'` is inert text, not a command substitution.
+   */
+  private parseWordParts(raw: string, range: Range, offset: number = range.start): WordPart[] {
     const parts: WordPart[] = [];
     let i = 0;
     let literal = "";
-    const flushLiteral = () => {
+    let literalStart = 0;
+    let quote: QuoteContext = null;
+    /** how many parts existed when the current quote opened */
+    let partsAtQuoteOpen = 0;
+
+    const at = (start: number, end: number): Range => ({ start: offset + start, end: offset + end });
+
+    const addLiteral = (text: string, from: number) => {
+      if (literal.length === 0) literalStart = from;
+      literal += text;
+    };
+
+    const flushLiteral = (end: number) => {
       if (literal.length > 0) {
-        parts.push({
-          type: "Word",
-          value: literal,
-          range, // approximate
-        });
+        parts.push({ type: "Word", value: literal, quoted: quote, range: at(literalStart, end) });
         literal = "";
       }
     };
@@ -834,9 +904,80 @@ export class Parser {
     while (i < raw.length) {
       const ch = raw[i]!;
 
+      // ── Quote transitions ──
+      if (quote === null && (ch === "'" || ch === '"')) {
+        flushLiteral(i);
+        quote = ch === "'" ? "single" : "double";
+        partsAtQuoteOpen = parts.length;
+        literalStart = i + 1;
+        i++;
+        continue;
+      }
+
+      if (quote !== null && ch === (quote === "single" ? "'" : '"')) {
+        // `''` and `""` are an empty word, but `"$X"` is just the expansion
+        if (literal.length === 0 && parts.length === partsAtQuoteOpen) {
+          parts.push({ type: "Word", value: "", quoted: quote, range: at(literalStart - 1, i + 1) });
+        }
+        flushLiteral(i);
+        quote = null;
+        i++;
+        continue;
+      }
+
+      // Inside single quotes nothing is special — not even a backslash
+      if (quote === "single") {
+        addLiteral(ch, i);
+        i++;
+        continue;
+      }
+
+      // ── $'…' (escapes resolved) and $"…" (a double-quoted string) ──
+      if (quote === null && ch === "$" && (raw[i + 1] === "'" || raw[i + 1] === '"')) {
+        flushLiteral(i);
+        if (raw[i + 1] === "'") {
+          const { value, next } = readAnsiCString(raw, i + 2);
+          parts.push({ type: "Word", value, quoted: "single", range: at(i, next) });
+          i = next;
+        } else {
+          quote = "double";
+          partsAtQuoteOpen = parts.length;
+          literalStart = i + 2;
+          i += 2;
+        }
+        continue;
+      }
+
+      // ── Backslash escapes ──
+      if (ch === "\\") {
+        const next = raw[i + 1];
+        if (next === undefined) {
+          addLiteral(ch, i);
+          i++;
+        } else if (quote === "double") {
+          // Only these five are escapable in double quotes; elsewhere the
+          // backslash is an ordinary character
+          if (next === "$" || next === "`" || next === '"' || next === "\\" || next === "\n") {
+            addLiteral(next, i);
+            i += 2;
+          } else {
+            addLiteral(ch, i);
+            i++;
+          }
+        } else if (next === "\n") {
+          i += 2; // line continuation: both characters vanish
+        } else {
+          addLiteral(next, i);
+          i += 2;
+        }
+        continue;
+      }
+
       if (ch === "$" && i + 1 < raw.length) {
-        flushLiteral();
+        flushLiteral(i);
         const next = raw[i + 1]!;
+
+        const start = i;
 
         if (next === "{") {
           // ${...}
@@ -853,7 +994,8 @@ export class Parser {
             type: "VariableExpansion",
             expression: expr,
             braced: true,
-            range,
+            quoted: quote,
+            range: at(start, i),
           });
         } else if (next === "(") {
           if (i + 2 < raw.length && raw[i + 2] === "(") {
@@ -868,18 +1010,20 @@ export class Parser {
             parts.push({
               type: "ArithmeticExpansion",
               expression: expr,
-              range,
+              quoted: quote,
+              range: at(start, i),
             });
           } else {
             // $( command substitution )
             const bodyStart = i + 2;
-            const { body, next } = readParenBody(raw, i + 1);
-            i = next;
+            const { body, next: after } = readParenBody(raw, i + 1);
+            i = after;
             parts.push({
               type: "CommandSubstitution",
               backtick: false,
-              body: this.parseSubstitution(body, range.start + bodyStart),
-              range,
+              body: this.parseSubstitution(body, offset + bodyStart),
+              quoted: quote,
+              range: at(start, i),
             });
           }
         } else if (/[a-zA-Z_]/.test(next)) {
@@ -893,34 +1037,38 @@ export class Parser {
             type: "VariableExpansion",
             expression: name,
             braced: false,
-            range,
+            quoted: quote,
+            range: at(start, i),
           });
         } else if (/[0-9!?#$@*\-]/.test(next)) {
+          i += 2;
           parts.push({
             type: "VariableExpansion",
             expression: next,
             braced: false,
-            range,
+            quoted: quote,
+            range: at(start, i),
           });
-          i += 2;
         } else {
-          literal += ch;
+          addLiteral(ch, i);
           i++;
         }
-      } else if ((ch === "<" || ch === ">") && raw[i + 1] === "(") {
-        // <(cmd) / >(cmd) process substitution
-        flushLiteral();
+      } else if (quote === null && (ch === "<" || ch === ">") && raw[i + 1] === "(") {
+        // <(cmd) / >(cmd) process substitution — never inside quotes
+        flushLiteral(i);
+        const start = i;
         const bodyStart = i + 2;
         const { body, next } = readParenBody(raw, i + 1);
         i = next;
         parts.push({
           type: "ProcessSubstitution",
           direction: ch,
-          body: this.parseSubstitution(body, range.start + bodyStart),
-          range,
+          body: this.parseSubstitution(body, offset + bodyStart),
+          range: at(start, i),
         });
       } else if (ch === "`") {
-        flushLiteral();
+        flushLiteral(i);
+        const start = i;
         i++;
         const bodyStart = i;
         let body = "";
@@ -933,19 +1081,20 @@ export class Parser {
           type: "CommandSubstitution",
           backtick: true,
           // Inside backticks, \` \$ \\ stand for the bare character
-          body: this.parseSubstitution(body.replace(/\\([$`\\])/g, "$1"), range.start + bodyStart),
-          range,
+          body: this.parseSubstitution(body.replace(/\\([$`\\])/g, "$1"), offset + bodyStart),
+          quoted: quote,
+          range: at(start, i),
         });
       } else {
-        literal += ch;
+        addLiteral(ch, i);
         i++;
       }
     }
 
-    flushLiteral();
+    flushLiteral(i);
 
     if (parts.length === 0) {
-      parts.push({ type: "Word", value: "", range });
+      parts.push({ type: "Word", value: "", quoted: null, range });
     }
 
     return parts;
