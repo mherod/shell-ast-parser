@@ -142,9 +142,8 @@ Assignments cover scalars, arrays (`X=(a b)`), appends (`X+=y`), subscripts
   `readonly`, `typeset`, `let`, `[` and `test` are recognised by name, so a
   user-defined function of the same name would change what they mean at
   runtime.
-- **Regex escapes are not interpreted.** `RegexEscape` records `\w` or `\1`
-  without deciding whether your matcher supports them; only POSIX ERE structure
-  is parsed.
+- **Portability is described, not judged.** GNU-only regex constructs get their
+  own node types, but nothing decides whether your libc supports them.
 
 ## Development
 

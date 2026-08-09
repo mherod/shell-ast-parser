@@ -1274,7 +1274,10 @@ describe("=~ regex operands", () => {
       case "RegexQuantifier": return `${show(n.operand)}{${n.min},${n.max ?? ""}}`;
       case "RegexAlternation": return `alt(${n.alternatives.map(show).join(" | ")})`;
       case "RegexSequence": return `seq(${n.items.map(show).join(" ")})`;
-      case "RegexEscape": return `esc(${n.char})`;
+      case "RegexEscape": return `undefined(${n.char})`;
+      case "RegexBackreference": return `backref(${n.group})`;
+      case "RegexShorthand": return `short(${n.char})`;
+      case "RegexBoundary": return `bound(${n.kind})`;
       case "RegexExpansion": return `<${n.part.type}>`;
       default: return "null";
     }
@@ -1311,12 +1314,50 @@ describe("=~ regex operands", () => {
     expect(regex("[[:digit:]]{3}")).toBe("[class:digit]{3,3}");
   });
 
-  test("escapes are kept unresolved", () => {
-    // `\.` is a literal dot and `\w` is a matcher extension — the difference is
-    // the consumer's to decide, so neither is resolved here
-    expect(regex("\\.")).toBe("esc(.)");
-    expect(regex("\\w+")).toBe("esc(w){1,}");
-    expect(regex("a\\.b")).toBe('seq("a" esc(.) "b")');
+  describe("escapes", () => {
+    test("an escaped metacharacter is the literal character", () => {
+      // the one escape POSIX ERE actually defines
+      expect(regex("\\.")).toBe('"."');
+      expect(regex("\\*")).toBe('"*"');
+      expect(regex("\\\\")).toBe('"\\\\"');
+      expect(regex("a\\.b")).toBe('seq("a" "." "b")');
+    });
+
+    test("\\w and \\s carry the class they stand for", () => {
+      const shorthand = (pattern: string) =>
+        command(`[[ $s =~ ${pattern} ]]`).expression.regex;
+      expect(shorthand("\\w").type).toBe("RegexShorthand");
+      expect(shorthand("\\w").equivalent).toBe("[[:alnum:]_]");
+      expect(shorthand("\\W").negated).toBe(true);
+      expect(shorthand("\\W").equivalent).toBe("[^[:alnum:]_]");
+      expect(shorthand("\\s").equivalent).toBe("[[:space:]]");
+    });
+
+    test("boundaries are named", () => {
+      const boundary = (pattern: string) =>
+        command(`[[ $s =~ ${pattern} ]]`).expression.regex;
+      expect(boundary("\\b").kind).toBe("word");
+      expect(boundary("\\B").kind).toBe("notWord");
+      expect(boundary("\\<").kind).toBe("wordStart");
+      expect(boundary("\\>").kind).toBe("wordEnd");
+    });
+
+    test("backreferences carry their group number", () => {
+      const node = command("[[ $s =~ (a)\\1 ]]").expression.regex.items[1];
+      expect(node.type).toBe("RegexBackreference");
+      expect(node.group).toBe(1);
+    });
+
+    test("shorthands quantify like anything else", () => {
+      expect(regex("\\w+")).toBe("short(w){1,}");
+    });
+
+    test("POSIX leaves the rest undefined, including \\n and \\d", () => {
+      // ERE has no C-style escapes: \n is not a newline, and \d is PCRE's
+      for (const pattern of ["\\d", "\\n", "\\t", "\\q"]) {
+        expect(command(`[[ $s =~ ${pattern} ]]`).expression.regex.type).toBe("RegexEscape");
+      }
+    });
   });
 
   test("a quoted run matches literally, as bash requires", () => {

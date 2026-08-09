@@ -429,12 +429,47 @@ export interface RegexSequence {
 }
 
 /**
- * A backslash escape, kept unresolved: `\.` is a literal dot, but `\w` and
- * `\1` are extensions whose meaning depends on the matcher.
+ * A backslash escape POSIX leaves undefined — `\d`, `\n`, `\q`. ERE has no
+ * C-style escapes, so these are not what they look like; matchers generally
+ * fall back to the bare character. Escapes with a defined meaning become a
+ * `RegexLiteral`, `RegexBackreference`, `RegexShorthand` or `RegexBoundary`.
  */
 export interface RegexEscape {
   type: "RegexEscape";
   char: string;
+  range: Range;
+}
+
+/**
+ * `\1`–`\9`. A GNU extension: POSIX ERE has no backreferences, and BSD or
+ * macOS libc will not match one.
+ */
+export interface RegexBackreference {
+  type: "RegexBackreference";
+  group: number;
+  range: Range;
+}
+
+/**
+ * `\w`, `\W`, `\s`, `\S` — GNU shorthand for a character class, unsupported on
+ * BSD and macOS. `equivalent` gives the portable spelling.
+ */
+export interface RegexShorthand {
+  type: "RegexShorthand";
+  char: string;
+  negated: boolean;
+  /** the bracket expression this stands for, e.g. `[[:alnum:]_]` for `\w` */
+  equivalent: string;
+  range: Range;
+}
+
+/**
+ * A zero-width position assertion: `\b`, `\B`, `\<`, `\>`, `` \` ``, `\'`.
+ * Also GNU extensions.
+ */
+export interface RegexBoundary {
+  type: "RegexBoundary";
+  kind: "word" | "notWord" | "wordStart" | "wordEnd" | "bufferStart" | "bufferEnd";
   range: Range;
 }
 
@@ -455,6 +490,9 @@ export type RegexNode =
   | RegexAlternation
   | RegexSequence
   | RegexEscape
+  | RegexBackreference
+  | RegexShorthand
+  | RegexBoundary
   | RegexExpansion;
 
 /**

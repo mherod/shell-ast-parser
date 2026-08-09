@@ -9,10 +9,10 @@ forever in `parseCompoundList`. That was not in the original report, which
 concluded the parser was "fundamentally sound".
 
 Findings 1–5 are defects the parser had, 6–10 are constructs it silently dropped
-on the floor, and 11–27 are places where the AST asserted things about the
+on the floor, and 11–28 are places where the AST asserted things about the
 source that were not true.
 
-Status: all findings below are fixed. `bun test` → 283 pass / 0 fail. `tsc --noEmit` → clean.
+Status: all findings below are fixed. `bun test` → 288 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -538,6 +538,33 @@ A parser bug surfaced while testing this: `[[ $s =~ ]]` consumed the closing
 `]]` as the operand, because the binary-operator branch took the next token
 unconditionally. It now stops at `]]`.
 
+### 28. Regex escapes were undifferentiated — LOW
+**Files:** `src/regex.ts`, `src/ast.ts`
+
+Finding 27 left every backslash escape as a single `RegexEscape`, on the
+argument that resolving `\w` would assert something the shell does not. That
+was too blunt: it lumped together three things with genuinely different status.
+
+**Fix:** each escape gets the meaning it actually has.
+
+- **Defined by POSIX** — a backslash before a metacharacter is that literal
+  character, so `\.` becomes a plain `RegexLiteral(".")`.
+- **GNU extensions**, which glibc implements and BSD and macOS libc do not,
+  keep node types of their own rather than being folded into literals:
+  `RegexBackreference` for `\1`–`\9`, `RegexShorthand` for `\w` `\W` `\s` `\S`
+  (carrying the portable spelling, `[[:alnum:]_]` for `\w`), and
+  `RegexBoundary` for `\b` `\B` `\<` `\>` `` \` `` `\'`.
+- **Undefined by POSIX** — everything else stays `RegexEscape`.
+
+That last category is the point of keeping the node rather than resolving it.
+ERE has no C-style escapes, so `\n` is not a newline and `\d` is PCRE's, not
+ERE's; both are reported as undefined instead of quietly becoming the letter.
+`\0` is undefined too, since backreferences start at 1.
+
+Distinguishing the three is what lets a consumer answer the question that
+matters in practice: whether a pattern will behave the same on macOS as on
+Linux.
+
 ---
 
 ## Original findings that did not hold
@@ -564,13 +591,12 @@ for code that lives in `parser.ts`.
   `readonly`, `typeset`, `let`, `[` and `test` are recognised by name; a
   user-defined function of the same name would change what they mean at
   runtime.
-- **Regex escapes are not interpreted.** `RegexEscape` records `\w` and `\1`
-  without deciding whether the matcher supports them; only POSIX ERE structure
-  is parsed.
+- **Portability is described, not judged.** GNU-only regex constructs get their
+  own node types, but nothing decides whether the host's libc supports them.
 
 ## Regression coverage added
 
-`src/parser.test.ts`, 283 tests total: heredoc content attachment, two-heredoc
+`src/parser.test.ts`, 288 tests total: heredoc content attachment, two-heredoc
 ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
 `[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
 detached-paren disambiguation, unterminated), background on pipelines and lists

@@ -100,6 +100,46 @@ class RegexParser {
     return { min, max: match[3] === "" ? null : parseInt(match[3]!, 10) };
   }
 
+  /**
+   * Give a backslash escape its meaning.
+   *
+   * Only one case is portable: a backslash before a metacharacter, which POSIX
+   * defines as that literal character. Everything else recognised here is a GNU
+   * extension that BSD and macOS libc do not implement, so it keeps a node type
+   * of its own rather than being folded into a literal. Anything left over is
+   * undefined by POSIX and stays a bare `RegexEscape`.
+   */
+  private escapeNode(escaped: string, start: number): RegexNode {
+    const range = this.range(start, this.pos);
+
+    if (ERE_METACHARACTERS.has(escaped)) {
+      return { type: "RegexLiteral", value: escaped, range };
+    }
+
+    if (escaped >= "1" && escaped <= "9") {
+      return { type: "RegexBackreference", group: Number(escaped), range };
+    }
+
+    const shorthand = SHORTHAND_CLASSES[escaped.toLowerCase()];
+    if (shorthand !== undefined) {
+      const negated = escaped === escaped.toUpperCase();
+      return {
+        type: "RegexShorthand",
+        char: escaped,
+        negated,
+        equivalent: negated ? shorthand.replace("[", "[^") : shorthand,
+        range,
+      };
+    }
+
+    const boundary = BOUNDARY_KINDS[escaped];
+    if (boundary !== undefined) {
+      return { type: "RegexBoundary", kind: boundary, range };
+    }
+
+    return { type: "RegexEscape", char: escaped, range };
+  }
+
   private parseAtom(): RegexNode {
     const start = this.pos;
     const ch = this.text[start];
@@ -155,9 +195,7 @@ class RegexParser {
       const escaped = this.text[start + 1];
       if (escaped === undefined) throw new RegexSyntaxError("Trailing backslash");
       this.pos += 2;
-      // Kept as an escape rather than resolved: `\.` is a literal dot but `\w`
-      // and `\1` are extensions whose meaning depends on the matcher
-      return { type: "RegexEscape", char: escaped, range: this.range(start, this.pos) };
+      return this.escapeNode(escaped, start);
     }
 
     if (ch === undefined || ch === ")") throw new RegexSyntaxError("Unexpected end of pattern");
@@ -177,6 +215,24 @@ class RegexParser {
 
 const REGEX_SPECIAL = new Set(["(", ")", "[", "]", "{", "}", "|", "^", "$", ".", "\\", "*", "+", "?", "'", '"', "`"]);
 const REGEX_QUANTIFIER_LEADS = new Set(["*", "+", "?", "{"]);
+
+/** Escaping one of these is the only escape POSIX ERE actually defines */
+const ERE_METACHARACTERS = new Set([".", "[", "]", "\\", "(", ")", "*", "+", "?", "{", "}", "|", "^", "$"]);
+
+/** GNU shorthands, with the bracket expression each stands for */
+const SHORTHAND_CLASSES: Record<string, string | undefined> = {
+  w: "[[:alnum:]_]",
+  s: "[[:space:]]",
+};
+
+const BOUNDARY_KINDS: Record<string, "word" | "notWord" | "wordStart" | "wordEnd" | "bufferStart" | "bufferEnd" | undefined> = {
+  b: "word",
+  B: "notWord",
+  "<": "wordStart",
+  ">": "wordEnd",
+  "`": "bufferStart",
+  "'": "bufferEnd",
+};
 
 /**
  * Parse `text` as an extended regular expression, or return null when it does
