@@ -383,9 +383,14 @@ console.log = log;
 
 // Across a sweep the useful question is which constructs keep failing, not
 // which files did. Group the root causes by the shape of the offending line.
-const roots = reports.flatMap((report) =>
-  report.failures.filter((failure) => !failure.cascade).map((failure) => ({ report, failure })),
-);
+// Only the first failure in a file is trustworthy. Everything after it was
+// parsed from a resume point that may sit inside a construct, so those failures
+// describe the recovery rather than the source. Pass --first to see just those.
+const roots = reports.flatMap((report) => {
+  const real = report.failures.filter((failure) => !failure.cascade);
+  const kept = argv.includes("--first") ? real.slice(0, 1) : real;
+  return kept.map((failure) => ({ report, failure }));
+});
 if (roots.length > 0) {
   const byMessage = new Map<string, { count: number; example: string; where: string }>();
   for (const { report, failure } of roots) {
