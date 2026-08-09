@@ -1,11 +1,17 @@
 /**
- * Runs the parser over the real zsh startup files on this machine and reports
- * what it could not handle. Startup files are the harshest corpus available —
- * hand-written over years, and zsh rather than the bash/sh the parser targets.
+ * Runs the parser over real shell scripts and reports what it could not handle.
+ * Scripts people actually ship are the harshest corpus available — written over
+ * years, by many hands, against whichever shell was in front of them.
  *
- *   bun scripts/debug-zsh-profile.ts              # tier 1: the home profile
- *   bun scripts/debug-zsh-profile.ts --all        # plus /etc and any framework
- *   bun scripts/debug-zsh-profile.ts <file...>    # specific files
+ *   bun scripts/debug-shell-corpus.ts               # the zsh startup files
+ *   bun scripts/debug-shell-corpus.ts --all         # plus /etc and any framework
+ *   bun scripts/debug-shell-corpus.ts <path...>     # files, or directories to walk
+ *   bun scripts/debug-shell-corpus.ts --first <dir> # one failure per file
+ *
+ * A directory is walked for shell scripts, found by extension or by shebang —
+ * most of what a package manager installs carries no extension at all. Each
+ * file is read as the shell its shebang names, so a mixed corpus is judged by
+ * the right grammar; `--zsh` or `--bash` overrides that.
  *
  * Values that look like secrets are redacted before anything is printed, since
  * startup files hold tokens and keys.
@@ -17,8 +23,12 @@ import type { Dialect, Script } from "../src/ast.ts";
 
 const HOME = homedir();
 
-/** These are zsh startup files, so `--zsh` is what actually matches them */
-const DIALECT: Dialect = Bun.argv.includes("--zsh") ? "zsh" : "bash";
+/** An explicit dialect flag overrides what each file's shebang says */
+const FORCED: Dialect | null = Bun.argv.includes("--zsh")
+  ? "zsh"
+  : Bun.argv.includes("--bash")
+    ? "bash"
+    : null;
 
 /** The files zsh itself reads at startup, in the order it reads them */
 const TIER1 = [
@@ -41,6 +51,59 @@ const TIER2 = [
   `${HOME}/.zprezto/runcoms/zlogout`,
   `${HOME}/.zprezto/runcoms/zpreztorc`,
 ];
+
+// ── Which files are shell, and which shell ─────────────────────────
+
+const SHELL_EXTENSIONS = /\.(sh|bash|zsh|ksh|dash|bashrc|zshrc)$/;
+const STARTUP_NAMES = /^\.?(bash|zsh)(rc|_profile|env|login|logout|profile)$|^profile$/;
+
+/**
+ * The shell a file is written for, or null when it is not a shell script.
+ * Extension decides when there is one; otherwise the shebang does, which is the
+ * only signal most installed scripts carry.
+ */
+async function shellOf(path: string): Promise<Dialect | null> {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+
+  // Completions are shell code carrying neither shebang nor extension, and
+  // there are more of them installed than of anything else. Where they live is
+  // the only thing that identifies them — and which shell they are written for.
+  if (/\/(fish|elvish|nushell)\//.test(path)) return null;
+  if (/\/(zsh\/site-functions|site-functions|zsh-completions?)\//.test(path)) return "zsh";
+  if (/\/(bash_completion\.d|bash-completion|bash_completion)\//.test(path)) return "bash";
+
+  // Read the first line either way: a `.sh` may still say `#!/usr/bin/env zsh`
+  let head = "";
+  try {
+    const handle = Bun.file(path);
+    head = await handle.slice(0, 128).text();
+  } catch {
+    return null;
+  }
+
+  // A binary is not worth guessing at
+  if (head.includes("\0")) return null;
+
+  // The Tcl trick: a `#!/bin/sh` header whose next line hands the file to
+  // another interpreter, so everything below it is Tcl and never reaches a
+  // shell. Judging that as shell would measure the wrong thing.
+  if (name.endsWith(".tcl")) return null;
+  if (/\\\n?\s*exec\s+(wish|tclsh|expect)/.test(head) || /^#!\s*\S*(wish|tclsh)/.test(head)) return null;
+
+  const shebang = /^#!\s*(\S+)(?:\s+(\S+))?/.exec(head);
+  if (shebang) {
+    const interpreter = (shebang[1]!.endsWith("/env") ? shebang[2] ?? "" : shebang[1]!);
+    const base = interpreter.slice(interpreter.lastIndexOf("/") + 1);
+    if (base === "zsh") return "zsh";
+    if (["sh", "bash", "dash", "ksh", "ksh93", "mksh", "ash"].includes(base)) return "bash";
+    // fish, csh, python, perl … are other languages, not this parser's job
+    return null;
+  }
+
+  if (SHELL_EXTENSIONS.test(name)) return name.endsWith(".zsh") ? "zsh" : "bash";
+  if (STARTUP_NAMES.test(name)) return name.includes("zsh") ? "zsh" : "bash";
+  return null;
+}
 
 // ── Redaction ──────────────────────────────────────────────────────
 
@@ -224,20 +287,21 @@ interface Report {
   ok: boolean;
   detail: string;
   failures: Failure[];
+  dialect: Dialect;
 }
 
-async function probe(path: string): Promise<Report> {
+async function probe(path: string, dialect: Dialect): Promise<Report> {
   const file = Bun.file(path);
   if (!(await file.exists())) {
-    return { path, bytes: 0, lines: 0, ok: false, detail: "missing", failures: [] };
+    return { path, bytes: 0, lines: 0, ok: false, detail: "missing", failures: [], dialect };
   }
 
   const source = await file.text();
-  const base = { path, bytes: source.length, lines: source.split("\n").length, failures: [] };
+  const base = { path, bytes: source.length, lines: source.split("\n").length, failures: [], dialect };
 
   let tokens: Token[];
   try {
-    tokens = tokenize(source, { dialect: DIALECT });
+    tokens = tokenize(source, { dialect });
   } catch (error) {
     const err = error as Error;
     console.log(`  TOKENIZE THREW: ${redact(err.message)}`);
@@ -255,7 +319,7 @@ async function probe(path: string): Promise<Report> {
   while (offset < source.length) {
     const remainder = source.slice(offset);
     try {
-      const parsed = parse(tokenize(remainder, { dialect: DIALECT }), { dialect: DIALECT });
+      const parsed = parse(tokenize(remainder, { dialect }), { dialect });
       if (script === null) script = parsed;
       break;
     } catch (error) {
@@ -344,19 +408,39 @@ async function probe(path: string): Promise<Report> {
 const argv = Bun.argv.slice(2);
 const explicit = argv.filter((arg) => !arg.startsWith("--"));
 
-/** A directory argument stands for every zsh file under it */
-async function expand(paths: string[]): Promise<string[]> {
-  const out: string[] = [];
+/**
+ * A directory argument stands for every shell script under it. What counts as
+ * one is decided per file rather than by extension, since most of what a
+ * package manager installs has none.
+ */
+async function expand(paths: string[]): Promise<{ path: string; dialect: Dialect }[]> {
+  const out: { path: string; dialect: Dialect }[] = [];
+  let examined = 0;
+  let skipped = 0;
+
   for (const path of paths) {
-    if ((await Bun.file(path).exists()) || !path.endsWith("/")) {
-      const stat = await Bun.file(path).stat().catch(() => null);
-      if (stat?.isDirectory()) {
-        const glob = new Bun.Glob("**/*.{zsh,sh,zshrc,zshenv,zprofile,zlogin,zlogout}");
-        for await (const found of glob.scan({ cwd: path, absolute: true })) out.push(found);
-        continue;
+    const stat = await Bun.file(path).stat().catch(() => null);
+
+    if (stat?.isDirectory()) {
+      const glob = new Bun.Glob("**/*");
+      for await (const found of glob.scan({ cwd: path, absolute: true, onlyFiles: true, followSymlinks: false })) {
+        examined++;
+        // What counts as a shell script is never forced — only which shell it
+        // is read as. Otherwise a flag turns every Python file in the tree into
+        // a parse failure.
+        const detected = await shellOf(found);
+        if (detected === null) skipped++;
+        else out.push({ path: found, dialect: FORCED ?? detected });
       }
+      continue;
     }
-    out.push(path);
+
+    // Named explicitly, so read it even if the shebang is unfamiliar
+    out.push({ path, dialect: FORCED ?? (await shellOf(path)) ?? "bash" });
+  }
+
+  if (examined > 0) {
+    console.log(`walked ${examined} files, ${out.length} are shell, ${skipped} are not\n`);
   }
   return out;
 }
@@ -372,9 +456,9 @@ if (quiet) console.log = () => {};
 
 const reports: Report[] = [];
 for (const target of targets) {
-  console.log(`\n=== ${target} ===`);
+  console.log(`\n=== ${target.path} (${target.dialect}) ===`);
   const started = performance.now();
-  const report = await probe(target);
+  const report = await probe(target.path, target.dialect);
   console.log(`  elapsed:     ${(performance.now() - started).toFixed(1)}ms`);
   reports.push(report);
 }
@@ -414,12 +498,18 @@ if (roots.length > 0) {
   }
 }
 
-console.log(`\n=== summary (${DIALECT}) ===`);
+console.log(`\n=== summary ===`);
 for (const report of reports) {
   if (quiet && report.ok) continue;
   const mark = report.ok ? "ok  " : "FAIL";
-  console.log(`${mark} ${report.path.replace(HOME, "~")}  (${report.bytes}B, ${report.lines} lines)  ${report.detail}`);
+  console.log(`${mark} ${report.path.replace(HOME, "~")} (${report.dialect})  (${report.bytes}B, ${report.lines} lines)  ${report.detail}`);
 }
+
 const failed = reports.filter((report) => !report.ok).length;
 const bytes = reports.reduce((sum, report) => sum + report.bytes, 0);
-console.log(`\n${reports.length - failed}/${reports.length} parsed clean (${(bytes / 1024).toFixed(0)}KB)`);
+const byDialect = (d: Dialect) => reports.filter((r) => r.dialect === d);
+console.log(
+  `\nbash ${byDialect("bash").filter((r) => r.ok).length}/${byDialect("bash").length}` +
+    `   zsh ${byDialect("zsh").filter((r) => r.ok).length}/${byDialect("zsh").length}`,
+);
+console.log(`${reports.length - failed}/${reports.length} parsed clean (${(bytes / 1024).toFixed(0)}KB)`);
