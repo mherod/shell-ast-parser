@@ -295,6 +295,14 @@ export class Tokenizer {
       const ch = this.src[this.pos]!;
 
       if (ch === "\n") {
+        // Inside `[[ … ]]` a newline is whitespace, not a terminator, so a
+        // condition may span lines and break before `&&`. The `[` builtin is an
+        // ordinary command and keeps the usual meaning.
+        if (this.inTestCommand) {
+          this.pos++;
+          continue;
+        }
+
         this.tokens.push({
           type: TokenType.Newline,
           value: "\n",

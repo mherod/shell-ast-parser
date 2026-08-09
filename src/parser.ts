@@ -369,6 +369,15 @@ export class Parser {
   parse(): Script {
     const start = this.peek().range.start;
     const commands = this.parseCompoundList(true);
+
+    // A terminator that closes nothing — a stray `)` or `}` — ends the list
+    // here, and everything after it would be dropped without a word. A short
+    // script that looks complete is the worst outcome for a caller auditing
+    // what a script runs, so refuse to return one.
+    if (!this.at(TokenType.EOF)) {
+      throw new ParseError("Unexpected token", this.peek());
+    }
+
     const end = this.peek().range.end;
 
     return {
@@ -1119,9 +1128,12 @@ export class Parser {
 
   private parseDoubleSquareBracket(): TestCommand {
     const start = this.expectWord("[[").range.start;
+    this.skipNewlines();
     const expression = this.atWord("]]") || this.at(TokenType.EOF) ? null : this.parseTestOr();
 
-    if (this.atWord("]]")) this.advance();
+    // `]]` closes the condition and is not optional. Accepting its absence
+    // turned an unterminated `[[` into a tree that silently dropped operands.
+    this.expectWord("]]");
     const redirects = this.parseTrailingRedirects();
 
     return {
@@ -1257,11 +1269,13 @@ export class Parser {
   private parseTestOr(): TestExpr {
     let left = this.parseTestAnd();
 
+    this.skipNewlines();
     while (this.atAny(TokenType.Operator, "||")) {
       this.advance();
       this.skipNewlines();
       const right = this.parseTestAnd();
       left = { type: "TestLogical", op: "||", left, right, range: { start: left.range.start, end: right.range.end } };
+      this.skipNewlines();
     }
 
     return left;
@@ -1270,11 +1284,16 @@ export class Parser {
   private parseTestAnd(): TestExpr {
     let left = this.parseTestNegation();
 
+    // A condition may break across lines, so a comment can sit between an
+    // operand and the operator that joins it. Inside `[[ … ]]` the tokenizer
+    // emits no newlines, so this only ever collects comments.
+    this.skipNewlines();
     while (this.atAny(TokenType.Operator, "&&")) {
       this.advance();
       this.skipNewlines();
       const right = this.parseTestNegation();
       left = { type: "TestLogical", op: "&&", left, right, range: { start: left.range.start, end: right.range.end } };
+      this.skipNewlines();
     }
 
     return left;

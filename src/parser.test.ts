@@ -1251,9 +1251,55 @@ describe("test expressions", () => {
   });
 
   test("malformed tests do not hang", () => {
-    for (const src of ["[[", "[[ -f ]]", "[[ && ]]", "[[ ( ]]", "[[ a ==", "[[ ! ]]"]) {
+    for (const src of ["[[ -f ]]", "[[ && ]]"]) {
       expect(() => parseShell(src)).not.toThrow();
     }
+
+    // A condition that never closes is a syntax error in the shell too, so the
+    // parser says where it ran out rather than returning a tree missing the
+    // operands it never reached
+    for (const src of ["[[", "[[ ( ]]", "[[ a ==", "[[ ! ]]"]) {
+      expect(() => parseShell(src)).toThrow(ParseError);
+    }
+  });
+
+  test("a condition spans lines, breaking before its operator", () => {
+    const multiline = command("[[ -n $A\n   || -n $B ]]");
+    const oneline = command("[[ -n $A || -n $B ]]");
+
+    expect(multiline.type).toBe("TestCommand");
+    expect(multiline.expression.type).toBe("TestLogical");
+    expect(multiline.expression.op).toBe(oneline.expression.op);
+    expect(parseShell("[[ -n $A\n   || -n $B ]]").commands.length).toBe(1);
+  });
+
+  test("a condition spans lines inside an if", () => {
+    const cmds = parseCmd("if [[ -n $A\n  && -z $B\n]]; then\n  echo yes\nfi");
+    const clause = (cmds[0] as any).commands[0];
+
+    expect(clause.type).toBe("IfClause");
+    expect(clause.condition.commands[0].commands[0].expression.type).toBe("TestLogical");
+  });
+
+  test("a comment inside a condition is not part of it", () => {
+    const cmd = command("[[ -n $A\n   # why\n   && -z $B\n]]");
+
+    expect(cmd.expression.type).toBe("TestLogical");
+    expect(cmd.expression.left.type).toBe("TestUnary");
+    expect(cmd.expression.right.type).toBe("TestUnary");
+  });
+
+  test("a newline straight after [[ is whitespace", () => {
+    const cmd = command("[[\n  -n $A\n]]");
+
+    expect(cmd.expression.type).toBe("TestUnary");
+    expect(cmd.expression.op).toBe("-n");
+  });
+
+  test("a newline still ends the [ builtin", () => {
+    // `[` is an ordinary command, so the newline terminates it as usual
+    const cmds = parseCmd("[ -n $A ]\necho after");
+    expect(cmds.length).toBe(2);
   });
 });
 
@@ -1399,9 +1445,13 @@ describe("=~ regex operands", () => {
   });
 
   test("malformed patterns do not hang", () => {
-    for (const src of ["[[ $s =~ ( ]]", "[[ $s =~ ) ]]", "[[ $s =~ [ ]]", "[[ $s =~ * ]]", "[[ $s =~ a{ ]]"]) {
+    for (const src of ["[[ $s =~ ) ]]", "[[ $s =~ [ ]]", "[[ $s =~ * ]]", "[[ $s =~ a{ ]]"]) {
       expect(() => parseShell(src)).not.toThrow();
     }
+
+    // The unclosed group takes the `]]` into the pattern, so the condition has
+    // no terminator left — bash rejects this one too
+    expect(() => parseShell("[[ $s =~ ( ]]")).toThrow(ParseError);
   });
 });
 
@@ -1687,5 +1737,36 @@ describe("fixture: sample.sh", () => {
     const src = await Bun.file("fixtures/sample.sh").text();
     const script = parseShell(src);
     expect(script.comments.length).toBeGreaterThan(5);
+  });
+});
+
+describe("a parse covers the whole source", () => {
+  // A terminator that closes nothing used to end the top-level list quietly,
+  // so everything past it vanished from a Script that looked complete. For a
+  // caller auditing what a script runs, that is the one failure it cannot see.
+  test("a stray closer is an error, not a shorter script", () => {
+    for (const src of ["echo one\n)\necho after", "echo one\n}\necho after", "X=(a b))\necho after"]) {
+      expect(() => parseShell(src)).toThrow(ParseError);
+    }
+  });
+
+  test("the error points at the token that closes nothing", () => {
+    try {
+      parseShell("echo one\n)\necho after");
+      throw new Error("expected a ParseError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ParseError);
+      expect((err as ParseError).token.value).toBe(")");
+    }
+  });
+
+  test("commands after a balanced array still arrive", () => {
+    const cmds = parseCmd("X=(a b)\necho after");
+    expect(cmds.length).toBe(2);
+  });
+
+  test("comments after every top-level form are kept", () => {
+    const src = "X=(\n  a\n)\n# one\nif true; then\n  echo hi\nfi\n# two\n";
+    expect(parseShell(src).comments.length).toBe(2);
   });
 });
