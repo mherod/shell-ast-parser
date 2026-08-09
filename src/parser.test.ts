@@ -1936,6 +1936,90 @@ describe("quoting and escapes the shell resolves", () => {
   });
 });
 
+describe("heredoc delimiters", () => {
+  const commands = (src: string) => parseShell(src).commands;
+
+  /** The first HereDoc anywhere, since it may sit inside an if or a loop */
+  const heredoc = (src: string): any => {
+    let found: any = null;
+    const walk = (node: unknown) => {
+      if (found || node === null || typeof node !== "object") return;
+      if (Array.isArray(node)) return node.forEach(walk);
+      const record = node as Record<string, unknown>;
+      if (record.type === "HereDoc") { found = record; return; }
+      Object.values(record).forEach(walk);
+    };
+    walk(parseShell(src));
+    return found;
+  };
+
+  test("a backslash quotes the delimiter, as quotes do", () => {
+    // All three name EOF and all three suppress expansion; only the spelling
+    // differs. Keeping the backslash left a delimiter no line could match, and
+    // the body swallowed the rest of the file.
+    for (const open of ["<<\\EOF", "<<'EOF'", '<<"EOF"']) {
+      const doc = heredoc(`cat ${open}\nbody\nEOF\necho after\n`);
+      expect(doc.delimiter).toBe("EOF");
+      expect(doc.quoted).toBe(true);
+      expect(commands(`cat ${open}\nbody\nEOF\necho after\n`).length).toBe(2);
+    }
+  });
+
+  test("an unquoted delimiter still expands", () => {
+    expect(heredoc("cat <<EOF\nbody\nEOF\n").quoted).toBe(false);
+  });
+
+  test("a metacharacter ends the delimiter", () => {
+    // `cat << EOF; then` names EOF — the `;` belongs to the line
+    const doc = heredoc("if cat << EOF; then\nbody\nEOF\n  echo yes\nfi\n");
+    expect(doc.delimiter).toBe("EOF");
+  });
+
+  test("the body still ends when the line carries on", () => {
+    for (const src of [
+      "if cat << EOF; then\nbody\nEOF\n  echo yes\nfi\necho after\n",
+      "while cat << EOF; do\nbody\nEOF\n  break\ndone\necho after\n",
+    ]) {
+      expect(commands(src).length).toBe(2);
+    }
+  });
+});
+
+describe("ranges survive a substitution's escapes", () => {
+  // A backtick body is unescaped before parsing — `\$` becomes `$` — so it is
+  // shorter than the source it came from. Shifting every range by one constant
+  // left them a character early, and drifting further with each escape.
+  const drifted = (src: string) => {
+    const found: string[] = [];
+    const walk = (node: unknown) => {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (node === null || typeof node !== "object") return;
+      const record = node as Record<string, unknown>;
+      if (record.type === "Word" && record.quoted === null && typeof record.value === "string") {
+        const range = record.range as { start: number; end: number };
+        if (src.slice(range.start, range.end) !== record.value) found.push(record.value);
+      }
+      for (const [key, value] of Object.entries(record)) if (key !== "range") walk(value);
+    };
+    walk(parseShell(src));
+    return found;
+  };
+
+  test("a backtick body with escapes keeps its ranges", () => {
+    expect(drifted("x=`echo \\$(CC) -e b`")).toEqual([]);
+    expect(drifted("x=`echo \\` -e b`")).toEqual([]);
+    expect(drifted("x=`sed -e 's/\\$(CC)//' \\\n  -e 's/x//'`")).toEqual([]);
+  });
+
+  test("a word inside backticks still slices back to itself", () => {
+    const src = "x=`echo \\$(CC) -e b`";
+    const sub = (parseShell(src).commands[0] as any).commands[0].assignments[0].value.parts[0];
+    expect(sub.type).toBe("CommandSubstitution");
+    const arg = sub.body.commands[0].commands[0].args[1];
+    expect(src.slice(arg.range.start, arg.range.end)).toBe("-e");
+  });
+});
+
 describe("negation is not lost", () => {
   // `if ! grep …` used to parse as a command named "!", dropping the negation
   // and inverting what the condition meant.

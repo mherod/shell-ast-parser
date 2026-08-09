@@ -202,10 +202,47 @@ export function readExpansionExtent(text: string, pos: number, dialect: Dialect 
  *
  * Exported because the parser re-scans token text and needs the identical rule.
  */
+/**
+ * The delimiter that ends a heredoc body, with `pos` on its first character.
+ * `'EOF'`, `"EOF"` and `\EOF` all name EOF and all suppress expansion in the
+ * body; only the spelling differs. Keeping a backslash in the delimiter would
+ * leave one no line can match, and the body would run to the end of the file.
+ */
+export function readHereDocDelimiter(
+  text: string,
+  pos: number,
+): { delimiter: string; quoted: boolean; next: number } {
+  let i = pos;
+  let delimiter = "";
+  let quoted = false;
+
+  if (text[i] === "'" || text[i] === '"') {
+    const quote = text[i]!;
+    quoted = true;
+    i++;
+    while (i < text.length && text[i] !== quote) { delimiter += text[i]; i++; }
+    if (i < text.length) i++;
+  } else {
+    // The delimiter is a word, so a metacharacter ends it: in
+    // `cat << EOF; then` the `;` belongs to the line, not to the name of the
+    // delimiter, and taking it would leave one no line can match.
+    while (i < text.length && isWordChar(text[i]!)) {
+      if (text[i] === "\\" && i + 1 < text.length) {
+        quoted = true;
+        i++;
+      }
+      delimiter += text[i];
+      i++;
+    }
+  }
+
+  return { delimiter, quoted, next: i };
+}
+
 export function readHereDocHeader(
   text: string,
   pos: number,
-): { delimiter: string; stripTabs: boolean; next: number } | null {
+): { delimiter: string; stripTabs: boolean; quoted: boolean; next: number } | null {
   if (text[pos] !== "<" || text[pos + 1] !== "<" || text[pos + 2] === "<") return null;
 
   let i = pos + 2;
@@ -213,20 +250,8 @@ export function readHereDocHeader(
   if (text[i] === "-") { stripTabs = true; i++; }
   while (i < text.length && isWhitespace(text[i]!)) i++;
 
-  let delimiter = "";
-  if (text[i] === "'" || text[i] === '"') {
-    const quote = text[i]!;
-    i++;
-    while (i < text.length && text[i] !== quote) { delimiter += text[i]; i++; }
-    if (i < text.length) i++;
-  } else {
-    while (i < text.length && !isWhitespace(text[i]!) && text[i] !== "\n") {
-      delimiter += text[i];
-      i++;
-    }
-  }
-
-  return delimiter === "" ? null : { delimiter, stripTabs, next: i };
+  const { delimiter, quoted, next } = readHereDocDelimiter(text, i);
+  return delimiter === "" ? null : { delimiter, stripTabs, quoted, next };
 }
 
 /**
@@ -574,27 +599,12 @@ export class Tokenizer {
           });
           this.atCommandStart = false;
 
-          // Read the delimiter
+          // Read the delimiter with the same reader the nested scanners use, so
+          // the two cannot disagree about what ends a body
           this.skipWhitespace();
           const delimStart = this.pos;
-          let delimiter = "";
-          let quoted = false;
-
-          if (this.pos < this.src.length && (this.src[this.pos] === "'" || this.src[this.pos] === '"')) {
-            quoted = true;
-            const quote = this.src[this.pos]!;
-            this.pos++;
-            while (this.pos < this.src.length && this.src[this.pos] !== quote) {
-              delimiter += this.src[this.pos];
-              this.pos++;
-            }
-            if (this.pos < this.src.length) this.pos++; // closing quote
-          } else {
-            while (this.pos < this.src.length && !isWhitespace(this.src[this.pos]!) && this.src[this.pos] !== "\n") {
-              delimiter += this.src[this.pos];
-              this.pos++;
-            }
-          }
+          const { delimiter, quoted, next } = readHereDocDelimiter(this.src, this.pos);
+          this.pos = next;
 
           // Emit the delimiter as written, quotes included, so the parser can
           // tell `<<EOF` (expands) from `<<'EOF'` (literal).

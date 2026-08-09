@@ -408,6 +408,34 @@ function readParenBody(raw: string, openParen: number): { body: string; next: nu
  * sibling nodes (a word's parts all point at the token range), so each one is
  * shifted at most once.
  */
+/**
+ * Move ranges from a substitution body onto the source it came from, where the
+ * two do not line up character for character. A backtick body is unescaped
+ * before parsing — `\$` becomes `$` — so it is shorter than what it came from,
+ * and every position after an escape needs its own answer rather than a shift.
+ * `map[i]` is where body position `i` sits in the original.
+ */
+function remapRanges(node: unknown, map: number[], seen: Set<object> = new Set()): void {
+  if (node === null || typeof node !== "object" || seen.has(node)) return;
+  seen.add(node);
+
+  if (Array.isArray(node)) {
+    for (const item of node) remapRanges(item, map, seen);
+    return;
+  }
+
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "range" && value !== null && typeof value === "object" && !seen.has(value)) {
+      seen.add(value);
+      const r = value as Range;
+      r.start = map[r.start] ?? map[map.length - 1] ?? r.start;
+      r.end = map[r.end] ?? map[map.length - 1] ?? r.end;
+    } else {
+      remapRanges(value, map, seen);
+    }
+  }
+}
+
 function shiftRanges(node: unknown, offset: number, seen: Set<object> = new Set()): void {
   if (node === null || typeof node !== "object" || seen.has(node)) return;
   seen.add(node);
@@ -893,10 +921,14 @@ export class Parser {
     if (opPart === "<<" || opPart === "<<-") {
       const delimTok = this.expect(TokenType.Word);
       const quote = delimTok.value[0];
-      const quoted = (quote === "'" || quote === '"') && delimTok.value.endsWith(quote) && delimTok.value.length >= 2;
+      // `<<'EOF'`, `<<"EOF"` and `<<\EOF` all name EOF and all suppress
+      // expansion in the body; only the spelling differs
+      const wrapped = (quote === "'" || quote === '"') && delimTok.value.endsWith(quote) && delimTok.value.length >= 2;
+      const escaped = delimTok.value.includes("\\");
+      const quoted = wrapped || escaped;
       const target: HereDoc = {
         type: "HereDoc",
-        delimiter: quoted ? delimTok.value.slice(1, -1) : delimTok.value,
+        delimiter: wrapped ? delimTok.value.slice(1, -1) : delimTok.value.replace(/\\(.)/g, "$1"),
         content: "",
         stripTabs: opPart === "<<-",
         quoted,
@@ -2134,17 +2166,27 @@ export class Parser {
         const start = i;
         i++;
         const bodyStart = i;
+        // Inside backticks, \` \$ \\ stand for the bare character. Dropping the
+        // backslash shortens the body, so record where each character it keeps
+        // came from — otherwise every range past an escape points a character
+        // early, and keeps drifting.
         let body = "";
+        const map: number[] = [];
         while (i < raw.length && raw[i] !== "`") {
-          if (raw[i] === "\\") { body += raw[i]!; i++; if (i < raw.length) { body += raw[i]!; i++; } }
-          else { body += raw[i]; i++; }
+          if (raw[i] === "\\" && /[$`\\]/.test(raw[i + 1] ?? "")) i++;
+          map.push(offset + i);
+          body += raw[i];
+          i++;
         }
+        map.push(offset + i);
         if (i < raw.length) i++;
+
+        const script = this.parseSubstitution(body, 0);
+        remapRanges(script, map);
         parts.push({
           type: "CommandSubstitution",
           backtick: true,
-          // Inside backticks, \` \$ \\ stand for the bare character
-          body: this.parseSubstitution(body.replace(/\\([$`\\])/g, "$1"), offset + bodyStart),
+          body: script,
           quoted: quote,
           range: at(start, i),
         });
