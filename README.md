@@ -22,6 +22,12 @@ import { parseShell } from "shell-ast-parser";
 const script = parseShell('cat "$f" > out.txt');
 ```
 
+Reading zsh takes a dialect. It defaults to `"bash"`, which also covers sh:
+
+```ts
+parseShell(source, { dialect: "zsh" });
+```
+
 You get a `Script` whose `commands` are `Pipeline`s wrapping the actual
 commands:
 
@@ -148,6 +154,42 @@ Builtins recognised by name — `declare`, `export`, `local`, `readonly`,
 earlier in the script, matching the shell: a call above the definition still
 uses the builtin, because the definition has not run yet.
 
+## The zsh dialect
+
+`{ dialect: "zsh" }` adds what zsh has and bash does not. It is opt-in because
+the two disagree: bash rejects every construct below, and reading a bash script
+as zsh would accept syntax bash would refuse to run.
+
+**Globs gain qualifiers and ranges.** A `(…)` that closes a pattern selects
+among what it matched rather than matching text, and is kept as written —
+deciding what it selects needs a filesystem. `<1->` is a number.
+
+```ts
+parseShell("print *(.)", { dialect: "zsh" });     // wildcard, then qualifier "."
+parseShell("[[ $v == <1-> ]]", { dialect: "zsh" }); // numeric-range, min 1, max null
+```
+
+What tells a qualifier from a pattern group is what precedes it: `(a|b)` alone
+is a group, while the one in `bin(N)` closes a word. A bare group is what bash
+writes `@(a|b)`, so its `op` is null.
+
+**Loops take more shapes.** The word list may be parenthesised, the body may be
+a single command with no `do`/`done`, and several variables share the list:
+
+```ts
+parseShell('for x (a b) echo $x', { dialect: "zsh" });
+parseShell("for k v in a b c d; do :; done", { dialect: "zsh" });  // variables: ["k","v"]
+parseShell("repeat $n do echo hi; done", { dialect: "zsh" });      // RepeatClause
+```
+
+`ForClause.variables` is always an array; bash simply never has more than one.
+
+**Functions may be anonymous.** `function { … }` binds no name and runs at once,
+so `name` is null and any trailing words become `args`.
+
+**Expansions may drop their braces.** `$arg[0,1]` is a subscripted expansion
+rather than an expansion followed by a glob bracket, and `$#arg` is a length.
+
 ## Known limitations
 
 - **`GlobPattern` is syntactic.** It marks unquoted metacharacters and
@@ -157,12 +199,11 @@ uses the builtin, because the definition has not run yet.
   that point on; separating those needs scope and flow analysis.
 - **Portability is described, not judged.** GNU-only regex constructs get their
   own node types, but nothing decides whether your libc supports them.
-- **zsh extensions are out of scope.** The target is bash/sh. Running the parser
-  over real zsh startup files leaves four constructs bash also rejects: glob
-  alternation and numeric ranges in a condition (`[[ $v == (a|b) ]]`,
-  `<1->`), anonymous functions (`function { … }`), the short for-loop
-  (`for x ("$a[@]") cmd`), and glob qualifiers (`dir/*(-/FN)`). Each raises a
-  `ParseError` naming the position rather than parsing to something plausible.
+- **zsh coverage is not complete.** The constructs below are supported; the
+  parser still refuses some of what the densest plugin internals use, such as
+  `${(f)...}` expansion flags in every position and some `case` patterns. Each
+  raises a `ParseError` naming the position rather than parsing to something
+  plausible.
 
 ## Development
 
