@@ -110,6 +110,15 @@ by `style`. Each follows its own grammar — the keyword form joins with `&&` an
 `||` and compares with `<` and `>`, while the builtin joins with `-a` and `-o`
 and lets `<` redirect, exactly as the shell does.
 
+A `[[ … ]]` condition may span lines, breaking before its operator and carrying
+comments between the operands, and parses to the same tree as the single-line
+form. Inside it a newline is whitespace; for the `[` builtin, which is an
+ordinary command, a newline still ends the command.
+
+```ts
+parseShell("[[ -n $A\n   # why\n   && -z $B\n]]");   // one TestCommand
+```
+
 The operand of `=~` parses as an extended regular expression, honouring the two
 rules that are invisible in the pattern text: a quoted run matches literally,
 and an expansion supplies its pattern at runtime.
@@ -148,6 +157,12 @@ uses the builtin, because the definition has not run yet.
   that point on; separating those needs scope and flow analysis.
 - **Portability is described, not judged.** GNU-only regex constructs get their
   own node types, but nothing decides whether your libc supports them.
+- **zsh extensions are out of scope.** The target is bash/sh. Running the parser
+  over real zsh startup files leaves four constructs bash also rejects: glob
+  alternation and numeric ranges in a condition (`[[ $v == (a|b) ]]`,
+  `<1->`), anonymous functions (`function { … }`), the short for-loop
+  (`for x ("$a[@]") cmd`), and glob qualifiers (`dir/*(-/FN)`). Each raises a
+  `ParseError` naming the position rather than parsing to something plausible.
 
 ## Development
 
