@@ -363,9 +363,14 @@ export interface TestBinary {
   range: Range;
 }
 
+/**
+ * `&&` and `||` come from `[[ … ]]`; `-a` and `-o` from `[ … ]` and `test`,
+ * where the shell would treat `&&` as a command separator. Kept verbatim
+ * rather than normalised, since the two forms differ in evaluation.
+ */
 export interface TestLogical {
   type: "TestLogical";
-  op: "&&" | "||";
+  op: "&&" | "||" | "-a" | "-o";
   left: TestExpr;
   right: TestExpr;
   range: Range;
@@ -386,10 +391,20 @@ export interface TestValue {
 
 export type TestExpr = TestUnary | TestBinary | TestLogical | TestNegation | TestValue;
 
-/** `[[ … ]]` — null expression for the empty `[[ ]]` */
+/**
+ * A conditional: the `[[ … ]]` keyword, or the `[ … ]` / `test` builtin.
+ *
+ * `style` matters — the keyword form suppresses word splitting and globbing on
+ * its operands and joins with `&&`, while the builtin is an ordinary command
+ * whose operands expand and which joins with `-a`. `expression` is null when
+ * there are no operands.
+ */
 export interface TestCommand {
   type: "TestCommand";
+  style: "[[" | "[" | "test";
   expression: TestExpr | null;
+  /** VAR=val prefixes; only reachable on the builtin form */
+  assignments: Assignment[];
   redirects: Redirect[];
   range: Range;
 }

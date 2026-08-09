@@ -198,6 +198,23 @@ function splitAlternatives(text: string): { text: string; offset: number }[] {
 }
 
 /**
+ * The literal text of a word that is nothing but literal text, or null when it
+ * expands. `\(` and `'('` both resolve to `(`, which is how a group survives
+ * into `[ … ]`.
+ */
+function literalValue(word: CompoundWord | undefined): string | null {
+  if (word === undefined || word.parts.length !== 1) return null;
+  const part = word.parts[0]!;
+  return part.type === "Word" ? part.value : null;
+}
+
+/** Words that end an operand run inside `[ … ]` */
+function isBracketKeyword(word: CompoundWord | undefined): boolean {
+  const value = literalValue(word);
+  return value === "-a" || value === "-o" || value === ")" || value === "]";
+}
+
+/**
  * Strip one layer of wrapping quotes, reporting how far the text shifted so
  * ranges stay aligned. Only a fully-quoted word is unwrapped.
  */
@@ -585,7 +602,7 @@ export class Parser {
 
   // ── Simple command (with function def detection) ───────────────
 
-  private parseSimpleCommandOrFunctionDef(): SimpleCommand | FunctionDef | LetCommand {
+  private parseSimpleCommandOrFunctionDef(): SimpleCommand | FunctionDef | LetCommand | TestCommand {
     const start = this.peek().range.start;
     const assignments: Assignment[] = [];
     const redirects: Redirect[] = [];
@@ -626,11 +643,14 @@ export class Parser {
     const nameToken = this.advance();
     const name = this.tokenToCompoundWord(nameToken);
 
-    // `let` evaluates each argument as arithmetic — the builtin spelling of
-    // `(( … ))`. A function of the same name would shadow it, which is not
-    // tracked here.
-    if (name.parts.length === 1 && name.parts[0]!.type === "Word" && name.parts[0]!.value === "let") {
+    // Builtins whose arguments are an expression rather than plain words. A
+    // function of the same name would shadow these, which is not tracked here.
+    const builtin = literalValue(name);
+    if (builtin === "let") {
       return this.parseLetCommand(start, assignments, redirects);
+    }
+    if (builtin === "[" || builtin === "test") {
+      return this.parseBracketTest(start, builtin, assignments, redirects);
     }
 
     const args: (CompoundWord | Assignment)[] = [];
@@ -1096,10 +1116,122 @@ export class Parser {
 
     return {
       type: "TestCommand",
+      style: "[[",
       expression,
+      assignments: [],
       redirects,
       range: { start, end: this.lastEnd(start) },
     };
+  }
+
+  /**
+   * `[ … ]` and `test …`, with the command name already consumed.
+   *
+   * Unlike `[[ … ]]` this is an ordinary command: its operands are words the
+   * shell expands, `-a` and `-o` do the joining, and grouping parens have to be
+   * quoted or escaped to survive. So the operands are collected first and the
+   * expression is read from the resolved words, letting `\(` and `'('` both
+   * count as a group.
+   */
+  private parseBracketTest(
+    start: number,
+    style: "[" | "test",
+    assignments: Assignment[],
+    redirects: Redirect[],
+  ): TestCommand {
+    const operands: CompoundWord[] = [];
+
+    while (this.at(TokenType.Word) || this.at(TokenType.Redirect)) {
+      if (this.at(TokenType.Redirect)) {
+        // `[ a < b ]` really does redirect — the shell reads it that way too
+        redirects.push(this.parseRedirect());
+        continue;
+      }
+      if (style === "[" && this.atWord("]")) break;
+      operands.push(this.tokenToCompoundWord(this.advance()));
+    }
+
+    if (style === "[" && this.atWord("]")) this.advance();
+    redirects.push(...this.parseTrailingRedirects());
+
+    const cursor = { index: 0 };
+    const expression = operands.length === 0 ? null : this.parseBracketOr(operands, cursor);
+
+    return {
+      type: "TestCommand",
+      style,
+      expression,
+      assignments,
+      redirects,
+      range: { start, end: this.lastEnd(start) },
+    };
+  }
+
+  private parseBracketOr(words: CompoundWord[], cursor: { index: number }): TestExpr {
+    let left = this.parseBracketAnd(words, cursor);
+
+    while (literalValue(words[cursor.index]) === "-o") {
+      cursor.index++;
+      const right = this.parseBracketAnd(words, cursor);
+      left = { type: "TestLogical", op: "-o", left, right, range: { start: left.range.start, end: right.range.end } };
+    }
+
+    return left;
+  }
+
+  private parseBracketAnd(words: CompoundWord[], cursor: { index: number }): TestExpr {
+    let left = this.parseBracketNegation(words, cursor);
+
+    while (literalValue(words[cursor.index]) === "-a") {
+      cursor.index++;
+      const right = this.parseBracketNegation(words, cursor);
+      left = { type: "TestLogical", op: "-a", left, right, range: { start: left.range.start, end: right.range.end } };
+    }
+
+    return left;
+  }
+
+  private parseBracketNegation(words: CompoundWord[], cursor: { index: number }): TestExpr {
+    const word = words[cursor.index];
+    if (literalValue(word) !== "!") return this.parseBracketPrimary(words, cursor);
+
+    cursor.index++;
+    const operand = this.parseBracketNegation(words, cursor);
+    return { type: "TestNegation", operand, range: { start: word!.range.start, end: operand.range.end } };
+  }
+
+  private parseBracketPrimary(words: CompoundWord[], cursor: { index: number }): TestExpr {
+    const word = words[cursor.index];
+    if (word === undefined) {
+      const last = words[words.length - 1];
+      const empty: CompoundWord = { type: "CompoundWord", parts: [], range: last?.range ?? { start: 0, end: 0 } };
+      return { type: "TestValue", word: empty, range: empty.range };
+    }
+
+    if (literalValue(word) === "(") {
+      cursor.index++;
+      const inner = this.parseBracketOr(words, cursor);
+      if (literalValue(words[cursor.index]) === ")") cursor.index++;
+      return inner;
+    }
+
+    cursor.index++;
+    const op = literalValue(word);
+
+    if (op !== null && TEST_UNARY_OPS.has(op) && cursor.index < words.length &&
+        !isBracketKeyword(words[cursor.index])) {
+      const operand = words[cursor.index++]!;
+      return { type: "TestUnary", op, operand, range: { start: word.range.start, end: operand.range.end } };
+    }
+
+    const next = literalValue(words[cursor.index]);
+    if (next !== null && TEST_BINARY_OPS.has(next) && cursor.index + 1 < words.length) {
+      cursor.index++;
+      const right = words[cursor.index++]!;
+      return { type: "TestBinary", op: next, left: word, right, range: { start: word.range.start, end: right.range.end } };
+    }
+
+    return { type: "TestValue", word, range: word.range };
   }
 
   // ── Test expressions: || binds loosest, then &&, then ! ────────

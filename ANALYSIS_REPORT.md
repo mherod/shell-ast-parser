@@ -9,10 +9,10 @@ forever in `parseCompoundList`. That was not in the original report, which
 concluded the parser was "fundamentally sound".
 
 Findings 1–5 are defects the parser had, 6–10 are constructs it silently dropped
-on the floor, and 11–25 are places where the AST asserted things about the
+on the floor, and 11–26 are places where the AST asserted things about the
 source that were not true.
 
-Status: all findings below are fixed. `bun test` → 256 pass / 0 fail. `tsc --noEmit` → clean.
+Status: all findings below are fixed. `bun test` → 269 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -474,6 +474,33 @@ Two details worth keeping straight, both verified against bash's behaviour: a
 bracket does not split alternatives — but at word level `echo [b|c]` really
 does pipe, because the tokenizer splits there exactly as the shell does.
 
+### 26. `[ … ]` and `test` were unstructured argument lists — MEDIUM
+**Files:** `src/ast.ts`, `src/parser.ts`
+
+Finding 23 gave `[[ … ]]` an expression tree while `[ -f x ]` stayed a
+`SimpleCommand` with `[` as its name and `]` as its last argument. The two
+spell the same intent, so a consumer had to handle them two different ways.
+
+**Fix:** both become `TestCommand`, separated by `style` (`"[["`, `"["`,
+`"test"`), reusing the same expression nodes.
+
+The grammars genuinely differ, and the parser follows each rather than
+pretending they are the same:
+
+- The builtin joins with `-a` and `-o`; `&&` inside `[ … ]` would end the
+  command. `TestLogical.op` widened to carry all four verbatim rather than
+  normalising, since evaluation differs.
+- `[ a < b ]` **redirects** from a file — the opposite of `[[ a < b ]]`, which
+  compares. The `[[`-only tokenizer rule from finding 23 is deliberately not
+  applied here, so this yields a redirect and a bare-value expression, exactly
+  as the shell reads it.
+- Grouping parens must be escaped or quoted to reach the builtin, so the
+  expression is read from resolved words: `\(` and `'('` both count as a group.
+
+`test` is included because it is the same builtin — omitting it would model
+`[ -f x ]` but not `test -f x`. Both are recognised only as a command name;
+`echo test` keeps the word and `test() { … }` is still a function definition.
+
 ---
 
 ## Original findings that did not hold
@@ -496,16 +523,16 @@ for code that lives in `parser.ts`.
 
 ## Known gaps
 
-- **`[ … ]` (the `test` builtin) is not modelled.** Only the `[[ … ]]` keyword
-  form gets an expression tree; `[ -f x ]` stays a `SimpleCommand` with `[` as
-  its name, because it genuinely is an ordinary command.
 - **Builtin shadowing is not tracked.** `declare`, `export`, `local`,
-  `readonly`, `typeset` and `let` are recognised by name; a user-defined
-  function of the same name would change what they mean at runtime.
+  `readonly`, `typeset`, `let`, `[` and `test` are recognised by name; a
+  user-defined function of the same name would change what they mean at
+  runtime.
+- **`=~` regex operands are words, not regex syntax.** `[[ $s =~ ^a.*b$ ]]`
+  keeps the right operand as a pattern word; its own grammar is not parsed.
 
 ## Regression coverage added
 
-`src/parser.test.ts`, 256 tests total: heredoc content attachment, two-heredoc
+`src/parser.test.ts`, 269 tests total: heredoc content attachment, two-heredoc
 ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
 `[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
 detached-paren disambiguation, unterminated), background on pipelines and lists

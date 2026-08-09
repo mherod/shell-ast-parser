@@ -105,9 +105,10 @@ redirections (`>`, `>>`, `<`, `>&`, `<&`, `>|`, `<>`, `<<<`) and heredocs
 `;&` and `;;&` fallthrough terminators), `(( … ))`, subshells, brace groups,
 functions (both forms), `coproc`, comments.
 
-`[[ … ]]` becomes a test expression tree — unary and binary operators, `&&`,
-`||`, `!` and grouping — with `<` and `>` treated as string comparisons rather
-than redirections.
+Conditionals become expression trees: `[[ … ]]`, `[ … ]` and `test`, told apart
+by `style`. Each follows its own grammar — the keyword form joins with `&&` and
+`||` and compares with `<` and `>`, while the builtin joins with `-a` and `-o`
+and lets `<` redirect, exactly as the shell does.
 
 Words resolve into parts: literals, variable expansions (`$x`, `${x:-d}`),
 command substitutions (`$( )` and backticks), arithmetic (`$(( ))`), process
@@ -128,12 +129,12 @@ Assignments cover scalars, arrays (`X=(a b)`), appends (`X+=y`), subscripts
 
 - **`GlobPattern` is syntactic.** It marks unquoted metacharacters and
   decomposes them; it does not tell you whether anything matches.
-- **`[ … ]` is not modelled as a test.** Only the `[[ … ]]` keyword form gets an
-  expression tree; `[ -f x ]` is a `SimpleCommand` named `[`, because that is
-  what it is — an ordinary command.
 - **Builtin shadowing is not tracked.** `declare`, `export`, `local`,
-  `readonly`, `typeset` and `let` are recognised by name, so a user-defined
-  function of the same name would change what they mean at runtime.
+  `readonly`, `typeset`, `let`, `[` and `test` are recognised by name, so a
+  user-defined function of the same name would change what they mean at
+  runtime.
+- **`=~` operands are words, not parsed regex.** `[[ $s =~ ^a.*b$ ]]` keeps the
+  right side as a pattern word.
 
 ## Development
 

@@ -1257,6 +1257,94 @@ describe("test expressions", () => {
   });
 });
 
+describe("the [ ] and test builtin", () => {
+  const command = (src: string) => (parseShell(src).commands[0] as any).commands[0];
+  const text = (word: any) => word.parts.map((p: any) => p.value ?? p.expression ?? p.type).join("");
+
+  const show = (n: any): string => {
+    switch (n?.type) {
+      case "TestUnary": return `(${n.op} ${text(n.operand)})`;
+      case "TestBinary": return `(${text(n.left)} ${n.op} ${text(n.right)})`;
+      case "TestLogical": return `(${show(n.left)} ${n.op} ${show(n.right)})`;
+      case "TestNegation": return `(! ${show(n.operand)})`;
+      case "TestValue": return text(n.word);
+      default: return "null";
+    }
+  };
+  const expr = (src: string) => show(command(src).expression);
+
+  test("[ … ] is a TestCommand, distinguished by style", () => {
+    expect(command("[ -f x ]").type).toBe("TestCommand");
+    expect(command("[ -f x ]").style).toBe("[");
+    expect(command("[[ -f x ]]").style).toBe("[[");
+    expect(command("test -f x").style).toBe("test");
+  });
+
+  test("unary and binary operators", () => {
+    expect(expr("[ -f x ]")).toBe("(-f x)");
+    expect(expr("[ $x = y ]")).toBe("(x = y)");
+    expect(expr("[ $n -lt 3 ]")).toBe("(n -lt 3)");
+  });
+
+  test("-a and -o join, and -a binds tighter", () => {
+    expect(expr("[ -f a -o -f b ]")).toBe("((-f a) -o (-f b))");
+    expect(expr("[ -f a -a -x b -o -d c ]")).toBe("(((-f a) -a (-x b)) -o (-d c))");
+  });
+
+  test("negation", () => {
+    expect(expr("[ ! -f x ]")).toBe("(! (-f x))");
+  });
+
+  test("grouping works escaped or quoted, as the shell requires", () => {
+    expect(expr("[ \\( -f a -o -f b \\) -a -x c ]")).toBe("(((-f a) -o (-f b)) -a (-x c))");
+    expect(expr("[ '(' -f a ')' ]")).toBe("(-f a)");
+  });
+
+  test("a bare word is tested for being non-empty", () => {
+    expect(expr("[ $x ]")).toBe("x");
+  });
+
+  test("an empty test has no expression", () => {
+    expect(command("[ ]").expression).toBeNull();
+    expect(command("test").expression).toBeNull();
+  });
+
+  test("test takes the same operators without brackets", () => {
+    expect(expr("test -f x")).toBe("(-f x)");
+    expect(expr("test $a = $b")).toBe("(a = b)");
+  });
+
+  test("< really is a redirection here, unlike in [[ … ]]", () => {
+    const cmd = command("[ a < b ]");
+    expect(cmd.redirects.length).toBe(1);
+    expect(expr("[ a < b ]")).toBe("a");
+    // the keyword form compares instead
+    expect(command("[[ a < b ]]").redirects).toEqual([]);
+  });
+
+  test("prefix assignments and redirects are kept", () => {
+    expect(command("FOO=1 [ -f x ]").assignments.length).toBe(1);
+    expect(command("[ -f x ] > out").redirects.length).toBe(1);
+  });
+
+  describe("only as a command name", () => {
+    test("[ and test as arguments stay words", () => {
+      expect(command("echo test").args[0].parts[0].value).toBe("test");
+      expect(command("echo [").args[0].parts[0].value).toBe("[");
+    });
+
+    test("a function named test is still a definition", () => {
+      expect(command("test() { :; }").type).toBe("FunctionDef");
+    });
+  });
+
+  test("malformed tests do not hang", () => {
+    for (const src of ["[", "[ -f ]", "[ -f a -o ]", "[ \\( ]", "[ ! ]", "[ -f a", "test -f"]) {
+      expect(() => parseShell(src)).not.toThrow();
+    }
+  });
+});
+
 describe("case terminators", () => {
   const items = (src: string) => (parseShell(src).commands[0] as any).commands[0].items;
 
