@@ -286,6 +286,27 @@ export interface ForClause {
   range: Range;
 }
 
+/** One argument of `let`, which the shell evaluates as arithmetic */
+export interface LetExpression {
+  /** the argument with any wrapping quotes removed */
+  text: string;
+  parsed: ArithmeticExpr | null;
+  range: Range;
+}
+
+/**
+ * `let a=1 b++` — the same evaluation as `(( … ))`, spelled as a builtin and
+ * taking any number of expressions.
+ */
+export interface LetCommand {
+  type: "LetCommand";
+  /** VAR=val prefixes, as on any command */
+  assignments: Assignment[];
+  expressions: LetExpression[];
+  redirects: Redirect[];
+  range: Range;
+}
+
 /** `(( expr ))` as a command — succeeds when the value is non-zero */
 export interface ArithmeticCommand {
   type: "ArithmeticCommand";
@@ -368,6 +389,7 @@ export type CompoundCommand =
 
 export type Command =
   | SimpleCommand
+  | LetCommand
   | Pipeline
   | List
   | CompoundCommand

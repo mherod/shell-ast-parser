@@ -1109,6 +1109,70 @@ describe("C-style for loops", () => {
   });
 });
 
+describe("let", () => {
+  const first = (src: string) => {
+    const command = parseShell(src).commands[0] as any;
+    return command.commands?.[0] ?? command;
+  };
+
+  test("a quoted argument is arithmetic", () => {
+    const cmd = first('let "i = 1"');
+    expect(cmd.type).toBe("LetCommand");
+    expect(cmd.expressions.length).toBe(1);
+    expect(cmd.expressions[0].text).toBe("i = 1");
+    expect(cmd.expressions[0].parsed.type).toBe("ArithmeticAssignment");
+  });
+
+  test("single quotes are unwrapped too", () => {
+    expect(first("let 'a=2'").expressions[0].parsed.type).toBe("ArithmeticAssignment");
+  });
+
+  test("each argument is its own expression", () => {
+    const cmd = first("let i=1 j++");
+    expect(cmd.expressions.map((e: any) => e.parsed.type)).toEqual(["ArithmeticAssignment", "ArithmeticUpdate"]);
+  });
+
+  test("an expansion inside stays a node", () => {
+    const cmd = first('let "n = $x + 1"');
+    expect(cmd.expressions[0].parsed.value.left.type).toBe("ArithmeticSubstitution");
+  });
+
+  test("prefix assignments and redirects are kept", () => {
+    expect(first("FOO=1 let x=2").assignments.length).toBe(1);
+    expect(first("let x=1 > out").redirects.length).toBe(1);
+  });
+
+  test("bare let has no expressions", () => {
+    expect(first("let").expressions).toEqual([]);
+  });
+
+  test("a non-arithmetic argument yields null and keeps its text", () => {
+    const expression = first('let "a b"').expressions[0];
+    expect(expression.parsed).toBeNull();
+    expect(expression.text).toBe("a b");
+  });
+
+  test("ranges survive the unwrapped quotes", () => {
+    const src = 'let "i = 1"';
+    const expression = first(src).expressions[0];
+    expect(src.slice(expression.range.start, expression.range.end)).toBe('"i = 1"');
+    expect(src.slice(expression.parsed.target.range.start, expression.parsed.target.range.end)).toBe("i");
+  });
+
+  describe("only as a command name", () => {
+    test("let as an argument is an ordinary word", () => {
+      const cmd = first("echo let");
+      expect(cmd.type).toBe("SimpleCommand");
+      expect(cmd.args[0].parts[0].value).toBe("let");
+    });
+
+    test("a function named let is still a definition", () => {
+      expect(first("let() { :; }").type).toBe("FunctionDef");
+      expect(first("function let { :; }").type).toBe("FunctionDef");
+    });
+  });
+});
+
 describe("fixture: sample.sh", () => {
   test("parses the full fixture without throwing", async () => {
     const src = await Bun.file("fixtures/sample.sh").text();

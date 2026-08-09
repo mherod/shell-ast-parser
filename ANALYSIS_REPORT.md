@@ -9,10 +9,10 @@ forever in `parseCompoundList`. That was not in the original report, which
 concluded the parser was "fundamentally sound".
 
 Findings 1–5 are defects the parser had, 6–10 are constructs it silently dropped
-on the floor, and 11–21 are places where the AST asserted things about the
+on the floor, and 11–22 are places where the AST asserted things about the
 source that were not true.
 
-Status: all findings below are fixed. `bun test` → 211 pass / 0 fail. `tsc --noEmit` → clean.
+Status: all findings below are fixed. `bun test` → 221 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -389,6 +389,26 @@ Two decisions worth recording:
   substitution-body decision in finding 8, where the text was otherwise
   discarded entirely and silence would have hidden it.
 
+### 22. `let` arguments were unparsed words — LOW
+**Files:** `src/ast.ts`, `src/parser.ts`
+
+`let "i = 1"` is the builtin spelling of `(( i = 1 ))`, but its argument stayed
+an ordinary word while the `(( … ))` form parsed into a tree.
+
+**Fix:** a `LetCommand` node whose `expressions` each carry the argument text
+and its parsed arithmetic. Wrapping quotes are stripped first, so `let "i = 1"`
+and `let i=1` agree, and the offset is tracked so inner ranges still point at
+the source. Prefix assignments and redirects are kept, as on any command.
+
+`let` gets its own node rather than being an enriched `SimpleCommand` — unlike
+the declaration builtins in finding 17, every argument is an expression and
+none is a flag, which makes it the same kind of thing as `ArithmeticCommand`.
+
+Only the command name is treated this way: `echo let` keeps `let` as a word,
+and `let() { … }` is still a function definition. A user-defined function named
+`let` would shadow the builtin, which this does not track — the same caveat as
+finding 17.
+
 ---
 
 ## Original findings that did not hold
@@ -415,12 +435,13 @@ for code that lives in `parser.ts`.
   so the alternatives of `@(a|b)` and the members of `[abc]` are not separate
   nodes, and an expansion inside one is not a `VariableExpansion`.
 - **`case` patterns and `[[ … ]]` contents** are words, not test expressions.
-- **`let` and arithmetic in other builtins** are not parsed: `let "i = 1"` keeps
-  its argument as an ordinary word.
+- **Builtin shadowing is not tracked.** `declare`, `export`, `local`,
+  `readonly`, `typeset` and `let` are recognised by name; a user-defined
+  function of the same name would change what they mean at runtime.
 
 ## Regression coverage added
 
-`src/parser.test.ts`, 211 tests total: heredoc content attachment, two-heredoc
+`src/parser.test.ts`, 221 tests total: heredoc content attachment, two-heredoc
 ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
 `[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
 detached-paren disambiguation, unterminated), background on pipelines and lists

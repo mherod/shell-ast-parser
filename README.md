@@ -87,10 +87,10 @@ parseShell('echo "$(rm -rf /)"');  // a CommandSubstitution, quoted "double"
 **Escapes are resolved.** `Word.value` holds the literal text the shell would
 use: `"\$HOME"` yields `$HOME`, and `$'a\tb'` yields a real tab.
 
-**Arithmetic is a tree.** `$(( … ))`, `(( … ))` and C-style `for` headers parse
-into expression nodes with real precedence, so `$((1+2*3))` nests the
-multiplication. `expression` keeps the raw text alongside; `parsed` is null when
-the text does not fit the grammar.
+**Arithmetic is a tree.** `$(( … ))`, `(( … ))`, `let` arguments and C-style
+`for` headers parse into expression nodes with real precedence, so `$((1+2*3))`
+nests the multiplication. The raw text is kept alongside; `parsed` is null when
+it does not fit the grammar.
 
 ```ts
 parseShell("echo $((1+2*3))");   // ArithmeticBinary + { left: 1, right: (2 * 3) }
@@ -124,8 +124,9 @@ Assignments cover scalars, arrays (`X=(a b)`), appends (`X+=y`), subscripts
   part of that text rather than a `VariableExpansion`.
 - **`case` patterns and `[[ … ]]` contents** are kept as words rather than
   being modelled as test expressions.
-- **`let` is not special-cased.** `let "i = 1"` keeps its argument as an
-  ordinary word rather than parsing it as arithmetic.
+- **Builtin shadowing is not tracked.** `declare`, `export`, `local`,
+  `readonly`, `typeset` and `let` are recognised by name, so a user-defined
+  function of the same name would change what they mean at runtime.
 
 ## Development
 

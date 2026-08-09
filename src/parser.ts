@@ -2,6 +2,7 @@ import type {
   Script, Command, SimpleCommand, Pipeline, ListItem,
   CompoundWord, WordPart, Redirect, HereDoc, Assignment, ArrayLiteral, Range, QuoteContext,
   IfClause, ForClause, ArithmeticForClause, ArithmeticCommand, ArithmeticExpr,
+  LetCommand, LetExpression,
   WhileClause, UntilClause, CaseClause, CaseItem,
   Subshell, BraceGroup, FunctionDef, Comment, Coproc,
 } from "./ast.ts";
@@ -78,6 +79,16 @@ function findBracketClose(raw: string, start: number): number {
   }
 
   return -1;
+}
+
+/**
+ * Strip one layer of wrapping quotes, reporting how far the text shifted so
+ * ranges stay aligned. Only a fully-quoted word is unwrapped.
+ */
+function unwrapQuotes(raw: string): { text: string; offset: number } {
+  const quote = raw[0];
+  const wrapped = (quote === "'" || quote === '"') && raw.length >= 2 && raw.endsWith(quote);
+  return wrapped ? { text: raw.slice(1, -1), offset: 1 } : { text: raw, offset: 0 };
 }
 
 /** Skip a quoted span starting at the opening quote; returns the index past it */
@@ -458,7 +469,7 @@ export class Parser {
 
   // ── Simple command (with function def detection) ───────────────
 
-  private parseSimpleCommandOrFunctionDef(): SimpleCommand | FunctionDef {
+  private parseSimpleCommandOrFunctionDef(): SimpleCommand | FunctionDef | LetCommand {
     const start = this.peek().range.start;
     const assignments: Assignment[] = [];
     const redirects: Redirect[] = [];
@@ -498,6 +509,14 @@ export class Parser {
 
     const nameToken = this.advance();
     const name = this.tokenToCompoundWord(nameToken);
+
+    // `let` evaluates each argument as arithmetic — the builtin spelling of
+    // `(( … ))`. A function of the same name would shadow it, which is not
+    // tracked here.
+    if (name.parts.length === 1 && name.parts[0]!.type === "Word" && name.parts[0]!.value === "let") {
+      return this.parseLetCommand(start, assignments, redirects);
+    }
+
     const args: (CompoundWord | Assignment)[] = [];
 
     // Collect args and redirects
@@ -688,6 +707,38 @@ export class Parser {
       else: elseBody,
       redirects,
       range: { start, end: redirects.length > 0 ? redirects[redirects.length - 1]!.range.end : end },
+    };
+  }
+
+  /**
+   * `let expr [expr …]`, with the command name already consumed. Each argument
+   * is arithmetic; wrapping quotes are removed first, since `let "i = 1"` and
+   * `let i=1` mean the same thing.
+   */
+  private parseLetCommand(start: number, assignments: Assignment[], redirects: Redirect[]): LetCommand {
+    const expressions: LetExpression[] = [];
+
+    while (this.at(TokenType.Word) || this.at(TokenType.Assignment) || this.at(TokenType.Redirect)) {
+      if (this.at(TokenType.Redirect)) {
+        redirects.push(this.parseRedirect());
+        continue;
+      }
+
+      const tok = this.advance();
+      const { text, offset } = unwrapQuotes(tok.value);
+      expressions.push({
+        text,
+        parsed: this.parseArithmeticText(text, tok.range.start + offset),
+        range: tok.range,
+      });
+    }
+
+    return {
+      type: "LetCommand",
+      assignments,
+      expressions,
+      redirects,
+      range: { start, end: this.lastEnd(start) },
     };
   }
 
