@@ -94,10 +94,18 @@ export interface HereDoc {
 
 // ── Commands ───────────────────────────────────────────────────────
 
+/** The (one two three) of an array assignment */
+export interface ArrayLiteral {
+  type: "ArrayLiteral";
+  elements: CompoundWord[];
+  range: Range;
+}
+
 export interface Assignment {
   type: "Assignment";
   name: string;
-  value: CompoundWord | null;
+  /** null for a bare `VAR=`; discriminate on `value.type` */
+  value: CompoundWord | ArrayLiteral | null;
   range: Range;
 }
 
@@ -117,6 +125,8 @@ export interface Pipeline {
   /** ! prefix negates exit status */
   negated: boolean;
   commands: Command[];
+  /** terminated by & rather than ; or a newline */
+  background: boolean;
   range: Range;
 }
 
@@ -126,6 +136,8 @@ export interface List {
   left: ListItem;
   op: "&&" | "||" | ";" | "&";
   right: ListItem;
+  /** terminated by & rather than ; or a newline */
+  background: boolean;
   range: Range;
 }
 

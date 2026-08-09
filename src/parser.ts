@@ -1,10 +1,36 @@
 import type {
   Script, Command, SimpleCommand, Pipeline, ListItem,
-  CompoundWord, WordPart, Redirect, HereDoc, Assignment,
+  CompoundWord, WordPart, Redirect, HereDoc, Assignment, ArrayLiteral, Range,
   IfClause, ForClause, WhileClause, UntilClause, CaseClause, CaseItem,
   Subshell, BraceGroup, FunctionDef, Comment, Coproc,
 } from "./ast.ts";
-import { type Token, TokenType } from "./tokenizer.ts";
+import { tokenize, type Token, TokenType } from "./tokenizer.ts";
+
+/**
+ * Move every range in a subtree by `offset`. Range objects are shared between
+ * sibling nodes (a word's parts all point at the token range), so each one is
+ * shifted at most once.
+ */
+function shiftRanges(node: unknown, offset: number, seen: Set<object> = new Set()): void {
+  if (node === null || typeof node !== "object" || seen.has(node)) return;
+  seen.add(node);
+
+  if (Array.isArray(node)) {
+    for (const item of node) shiftRanges(item, offset, seen);
+    return;
+  }
+
+  for (const [key, value] of Object.entries(node)) {
+    if (key === "range" && value !== null && typeof value === "object" && !seen.has(value)) {
+      seen.add(value);
+      const r = value as Range;
+      r.start += offset;
+      r.end += offset;
+    } else {
+      shiftRanges(value, offset, seen);
+    }
+  }
+}
 
 export class ParseError extends Error {
   constructor(message: string, public token: Token) {
@@ -156,8 +182,8 @@ export class Parser {
       if (this.atAny(TokenType.Operator, ";", "&")) {
         const op = this.advance();
         if (op.value === "&") {
-          // Background: wrap in a list with & operator
-          // For simplicity, mark as background on the command
+          cmd.background = true;
+          cmd.range = { start: cmd.range.start, end: op.range.end };
         }
       }
 
@@ -179,7 +205,7 @@ export class Parser {
 
   // ── List: pipeline (&&/|| pipeline)* ───────────────────────────
 
-  private parseList(): Command {
+  private parseList(): ListItem {
     let left: ListItem = this.parsePipeline();
 
     while (this.atAny(TokenType.Operator, "&&", "||")) {
@@ -191,6 +217,7 @@ export class Parser {
         left,
         op: op.value as "&&" | "||",
         right,
+        background: false,
         range: { start: left.range.start, end: right.range.end },
       };
     }
@@ -223,6 +250,7 @@ export class Parser {
       type: "Pipeline",
       negated,
       commands,
+      background: false,
       range: { start, end },
     };
   }
@@ -342,12 +370,42 @@ export class Parser {
     const name = tok.value.slice(0, eqIdx);
     const rawValue = tok.value.slice(eqIdx + 1);
 
+    // `VAR=(a b c)` is an array literal, but `VAR= (cmd)` is an empty
+    // assignment followed by a subshell — only adjacency tells them apart.
+    if (rawValue.length === 0 && this.atAny(TokenType.Operator, "(") && this.peek().range.start === tok.range.end) {
+      const value = this.parseArrayLiteral();
+      return {
+        type: "Assignment",
+        name,
+        value,
+        range: { start: tok.range.start, end: value.range.end },
+      };
+    }
+
     return {
       type: "Assignment",
       name,
       value: rawValue.length > 0 ? this.rawToCompoundWord(rawValue, tok.range) : null,
       range: tok.range,
     };
+  }
+
+  private parseArrayLiteral(): ArrayLiteral {
+    const start = this.expect(TokenType.Operator, "(").range.start;
+    const elements: CompoundWord[] = [];
+
+    this.skipNewlines();
+    while (!this.atAny(TokenType.Operator, ")")) {
+      if (this.at(TokenType.EOF)) {
+        throw new ParseError("Unterminated array assignment", this.peek());
+      }
+      // An element like `x=1` tokenizes as an Assignment; it is a word here
+      elements.push(this.tokenToCompoundWord(this.advance()));
+      this.skipNewlines();
+    }
+
+    const end = this.expect(TokenType.Operator, ")").range.end;
+    return { type: "ArrayLiteral", elements, range: { start, end } };
   }
 
   // ── Redirections ───────────────────────────────────────────────
@@ -791,6 +849,7 @@ export class Parser {
             });
           } else {
             // $( command substitution )
+            const bodyStart = i + 2;
             i += 2;
             let body = "";
             let depth = 1;
@@ -803,7 +862,7 @@ export class Parser {
             parts.push({
               type: "CommandSubstitution",
               backtick: false,
-              body: { type: "Script", commands: [], comments: [], range },
+              body: this.parseSubstitution(body, range.start + bodyStart),
               range,
             });
           }
@@ -835,6 +894,7 @@ export class Parser {
       } else if (ch === "`") {
         flushLiteral();
         i++;
+        const bodyStart = i;
         let body = "";
         while (i < raw.length && raw[i] !== "`") {
           if (raw[i] === "\\") { body += raw[i]!; i++; if (i < raw.length) { body += raw[i]!; i++; } }
@@ -844,7 +904,8 @@ export class Parser {
         parts.push({
           type: "CommandSubstitution",
           backtick: true,
-          body: { type: "Script", commands: [], comments: [], range },
+          // Inside backticks, \` \$ \\ stand for the bare character
+          body: this.parseSubstitution(body.replace(/\\([$`\\])/g, "$1"), range.start + bodyStart),
           range,
         });
       } else {
@@ -860,6 +921,17 @@ export class Parser {
     }
 
     return parts;
+  }
+
+  /**
+   * Parse the inside of a `$(...)` or backtick substitution as its own script.
+   * Ranges come out relative to the captured text, so shift them onto the
+   * absolute source offset the body started at.
+   */
+  private parseSubstitution(body: string, offset: number): Script {
+    const script = new Parser(tokenize(body)).parse();
+    shiftRanges(script, offset);
+    return script;
   }
 
   private wrapScript(commands: Command[]): Script {

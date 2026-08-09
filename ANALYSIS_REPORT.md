@@ -8,7 +8,10 @@ findings are re-adjudicated at the bottom.
 forever in `parseCompoundList`. That was not in the original report, which
 concluded the parser was "fundamentally sound".
 
-Status: all findings below are fixed. `bun test` → 70 pass / 0 fail. `tsc --noEmit` → clean.
+Findings 1–5 are defects the parser had; 6–8 are constructs it silently dropped
+on the floor.
+
+Status: all findings below are fixed. `bun test` → 88 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -83,6 +86,44 @@ indistinguishable from `<<EOF` (expansion) in the AST.
 **Fix:** the tokenizer emits the delimiter as written; the parser strips the
 quotes and sets `quoted` accordingly.
 
+### 6. Array assignments were not represented — MEDIUM
+**Files:** `src/ast.ts`, `src/parser.ts`, `parseAssignment`
+
+`ITEMS=(one two three)` produced an empty assignment followed by a `Subshell`
+containing the command `one two three`. The elements were structurally
+indistinguishable from a command invocation.
+
+**Fix:** new `ArrayLiteral` node; `Assignment.value` is now
+`CompoundWord | ArrayLiteral | null`, discriminated on `value.type`. Elements
+may span lines and contain expansions. `VAR= (cmd)` — with a space — is still an
+empty assignment plus a subshell, which is what bash does; the two are told
+apart by checking that the paren is adjacent to the `=`.
+
+### 7. Background `&` was discarded — MEDIUM
+**Files:** `src/ast.ts`, `src/parser.ts`, `parseCompoundList`
+
+`parseCompoundList` consumed `&` and dropped it, under a `// For simplicity`
+comment. `sleep 10 &` and `sleep 10` produced identical ASTs.
+
+**Fix:** `background: boolean` on `Pipeline` and `List` — the two node types a
+`&` can terminate. The command's range now extends to cover the `&`.
+
+### 8. Command substitution bodies were thrown away — MEDIUM
+**File:** `src/parser.ts`, `parseWordParts`
+
+`CommandSubstitution.body` was hard-coded to an empty `Script`. The inner text
+was scanned to find the closing delimiter, then discarded — so `$(date +%s)` and
+`$(rm -rf /)` were indistinguishable in the AST.
+
+**Fix:** the captured text is tokenized and parsed recursively. Inner ranges are
+shifted onto the absolute source offset, so `src.slice(node.range.start,
+node.range.end)` returns the right text at any depth. Backtick bodies are
+unescaped (`\``, `\$`, `\\`) before parsing. Verified to 150 levels of nesting.
+
+One behaviour change: a syntax error inside a substitution now throws
+`ParseError` instead of silently yielding an empty body. `echo $(if` is a syntax
+error in bash too.
+
 ---
 
 ## Original findings that did not hold
@@ -103,19 +144,27 @@ for code that lives in `parser.ts`.
 
 ---
 
-## Not fixed (noted, out of scope)
+## Known gaps (not defects introduced here — nothing hangs or silently lies)
 
-- **Array assignments.** `ITEMS=(one two three)` parses as an assignment followed
-  by a subshell, not an array literal. No hang, but the AST is wrong. Needs an
-  `ArrayAssignment` node.
-- **Background `&`.** `parseCompoundList` consumes `&` and discards it; there is
-  a `// For simplicity` comment where the flag would go. The AST has no
-  `background` field to record it.
-- **Command substitution bodies.** `CommandSubstitution.body` is always an empty
-  `Script` — the inner text is parsed off and thrown away (`src/parser.ts:769`).
+- **Process substitution** never produces a `ProcessSubstitution` node, though
+  the type exists. `diff <(ls /tmp)` keeps `<(ls /tmp)` as one literal `Word`
+  part. Same shape of fix as finding 8.
+- **`+=` assignments** tokenize as a `Word`, not an `Assignment`: `ITEMS+=(x)`
+  yields `Word("ITEMS+=")`. Needs an `append` flag on `Assignment` and a
+  tokenizer change.
+- **Arrays in argument position.** `declare -a X=(1 2)` still splits into a
+  command plus a subshell — only *leading* assignments are parsed as arrays.
+  Handling it means special-casing the declaration builtins (`declare`, `local`,
+  `export`, `typeset`), which is arguably the consumer's job.
+- **Quotes inside substitution capture.** The `$( )` scanner counts parens
+  without tracking quotes, so `$(grep ")" file)` closes early. Pre-existing.
 
 ## Regression coverage added
 
-`src/parser.test.ts`: heredoc content attachment, two-heredoc ordering, quoted
-and `<<-` delimiters, `function name { }`, `coproc NAME { }`, `[[ ]]` redirects,
-and a `termination` block asserting that eight previously-hanging inputs return.
+`src/parser.test.ts`, 88 tests total: heredoc content attachment, two-heredoc
+ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
+`[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
+detached-paren disambiguation, unterminated), background on pipelines and lists
+and inside loop bodies, substitution bodies for `$()` and backticks including
+nesting and absolute range mapping, and a `termination` block asserting that
+eight previously-hanging inputs return.

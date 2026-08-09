@@ -281,6 +281,115 @@ describe("termination", () => {
   });
 });
 
+describe("array assignments", () => {
+  const assignment = (src: string) => (parseShell(src).commands[0] as any).commands[0].assignments[0];
+
+  test("elements become an ArrayLiteral", () => {
+    const value = assignment("ITEMS=(one two three)").value;
+    expect(value.type).toBe("ArrayLiteral");
+    expect(value.elements.map((e: any) => e.parts[0].value)).toEqual(["one", "two", "three"]);
+  });
+
+  test("empty array", () => {
+    expect(assignment("EMPTY=()").value.elements).toEqual([]);
+  });
+
+  test("elements may span lines", () => {
+    expect(assignment("A=(\n  x\n  y\n)").value.elements.length).toBe(2);
+  });
+
+  test("elements may contain expansions", () => {
+    const value = assignment("A=( $(echo x) )").value;
+    expect(value.elements.length).toBe(1);
+    expect(value.elements[0].parts[0].type).toBe("CommandSubstitution");
+  });
+
+  test("a detached paren is still a subshell, not an array", () => {
+    const script = parseShell("X= (echo hi)");
+    expect((script.commands[0] as any).commands[0].assignments[0].value).toBeNull();
+    expect((script.commands[1] as any).commands[0].type).toBe("Subshell");
+  });
+
+  test("unterminated array raises ParseError", () => {
+    expect(() => parseShell("A=(1 2")).toThrow(ParseError);
+  });
+});
+
+describe("background commands", () => {
+  const first = (src: string) => parseShell(src).commands[0] as any;
+
+  test("& marks a pipeline as background", () => {
+    expect(first("sleep 10 &").background).toBe(true);
+  });
+
+  test("& marks a list as background", () => {
+    const list = first("a && b &");
+    expect(list.type).toBe("List");
+    expect(list.background).toBe(true);
+  });
+
+  test("a plain command is not background", () => {
+    expect(first("sleep 10").background).toBe(false);
+  });
+
+  test("; does not mark background", () => {
+    expect(first("a; b &").background).toBe(false);
+  });
+
+  test("& separates two commands", () => {
+    const script = parseShell("a & b");
+    expect(script.commands.length).toBe(2);
+    expect((script.commands[0] as any).background).toBe(true);
+    expect((script.commands[1] as any).background).toBe(false);
+  });
+
+  test("background inside a loop body", () => {
+    const loop = (parseShell("for i in 1 2; do sleep $i & done").commands[0] as any).commands[0];
+    expect(loop.body.commands[0].background).toBe(true);
+  });
+});
+
+describe("command substitution bodies", () => {
+  const parts = (src: string) => (parseShell(src).commands[0] as any).commands[0].args[0].parts;
+
+  test("$(...) body is parsed into a Script", () => {
+    const sub = parts("echo $(date +%s)")[0];
+    expect(sub.type).toBe("CommandSubstitution");
+    expect(sub.backtick).toBe(false);
+    const inner = sub.body.commands[0].commands[0];
+    expect(inner.name.parts[0].value).toBe("date");
+    expect(inner.args[0].parts[0].value).toBe("+%s");
+  });
+
+  test("backtick body is parsed into a Script", () => {
+    const sub = parts("echo `ls -1 | wc -l`")[0];
+    expect(sub.backtick).toBe(true);
+    expect(sub.body.commands[0].commands.length).toBe(2);
+  });
+
+  test("inner ranges index the outer source", () => {
+    const src = "echo $(date +%s)";
+    const inner = parts(src)[0].body.commands[0].commands[0];
+    expect(src.slice(inner.range.start, inner.range.end)).toBe("date +%s");
+  });
+
+  test("substitutions nest", () => {
+    const outer = parts("echo $(echo $(echo deep))")[0];
+    const middle = outer.body.commands[0].commands[0].args[0].parts[0];
+    const inner = middle.body.commands[0].commands[0];
+    expect(inner.args[0].parts[0].value).toBe("deep");
+  });
+
+  test("an empty substitution yields an empty Script", () => {
+    expect(parts("echo $()")[0].body.commands).toEqual([]);
+  });
+
+  test("a compound command inside a substitution is parsed", () => {
+    const sub = parts("echo $(if true; then echo y; fi)")[0];
+    expect(sub.body.commands[0].commands[0].type).toBe("IfClause");
+  });
+});
+
 describe("fixture: sample.sh", () => {
   test("parses the full fixture without throwing", async () => {
     const src = await Bun.file("fixtures/sample.sh").text();
