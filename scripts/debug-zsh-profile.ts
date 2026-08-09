@@ -13,9 +13,12 @@
 import { homedir } from "node:os";
 import { tokenize, type Token } from "../src/tokenizer.ts";
 import { parse, ParseError } from "../src/parser.ts";
-import type { Script } from "../src/ast.ts";
+import type { Dialect, Script } from "../src/ast.ts";
 
 const HOME = homedir();
+
+/** These are zsh startup files, so `--zsh` is what actually matches them */
+const DIALECT: Dialect = Bun.argv.includes("--zsh") ? "zsh" : "bash";
 
 /** The files zsh itself reads at startup, in the order it reads them */
 const TIER1 = [
@@ -234,7 +237,7 @@ async function probe(path: string): Promise<Report> {
 
   let tokens: Token[];
   try {
-    tokens = tokenize(source);
+    tokens = tokenize(source, { dialect: DIALECT });
   } catch (error) {
     const err = error as Error;
     console.log(`  TOKENIZE THREW: ${redact(err.message)}`);
@@ -252,7 +255,7 @@ async function probe(path: string): Promise<Report> {
   while (offset < source.length) {
     const remainder = source.slice(offset);
     try {
-      const parsed = parse(tokenize(remainder));
+      const parsed = parse(tokenize(remainder, { dialect: DIALECT }), { dialect: DIALECT });
       if (script === null) script = parsed;
       break;
     } catch (error) {
@@ -340,7 +343,32 @@ async function probe(path: string): Promise<Report> {
 
 const argv = Bun.argv.slice(2);
 const explicit = argv.filter((arg) => !arg.startsWith("--"));
-const targets = explicit.length > 0 ? explicit : argv.includes("--all") ? [...TIER1, ...TIER2] : TIER1;
+
+/** A directory argument stands for every zsh file under it */
+async function expand(paths: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const path of paths) {
+    if ((await Bun.file(path).exists()) || !path.endsWith("/")) {
+      const stat = await Bun.file(path).stat().catch(() => null);
+      if (stat?.isDirectory()) {
+        const glob = new Bun.Glob("**/*.{zsh,sh,zshrc,zshenv,zprofile,zlogin,zlogout}");
+        for await (const found of glob.scan({ cwd: path, absolute: true })) out.push(found);
+        continue;
+      }
+    }
+    out.push(path);
+  }
+  return out;
+}
+
+const targets = await expand(
+  explicit.length > 0 ? explicit : argv.includes("--all") ? [...TIER1, ...TIER2] : TIER1,
+);
+
+// A directory sweep is about the tally, so drop the per-file detail
+const quiet = argv.includes("--quiet") || targets.length > 40;
+const log = console.log;
+if (quiet) console.log = () => {};
 
 const reports: Report[] = [];
 for (const target of targets) {
@@ -351,10 +379,42 @@ for (const target of targets) {
   reports.push(report);
 }
 
-console.log("\n=== summary ===");
+console.log = log;
+
+// Across a sweep the useful question is which constructs keep failing, not
+// which files did. Group the root causes by the shape of the offending line.
+const roots = reports.flatMap((report) =>
+  report.failures.filter((failure) => !failure.cascade).map((failure) => ({ report, failure })),
+);
+if (roots.length > 0) {
+  const byMessage = new Map<string, { count: number; example: string; where: string }>();
+  for (const { report, failure } of roots) {
+    const key = failure.message.replace(/at position \d+.*$/, "").trim();
+    const seen = byMessage.get(key);
+    if (seen) seen.count++;
+    else {
+      byMessage.set(key, {
+        count: 1,
+        example: failure.text.slice(0, 90),
+        where: `${report.path.replace(HOME, "~")}:${failure.line}`,
+      });
+    }
+  }
+
+  console.log(`\n=== root causes (${roots.length} across ${reports.filter((r) => !r.ok).length} files) ===`);
+  for (const [message, info] of [...byMessage.entries()].sort((a, b) => b[1].count - a[1].count)) {
+    console.log(`${String(info.count).padStart(4)}x ${message}`);
+    console.log(`      e.g. ${info.where}`);
+    console.log(`           ${redact(info.example)}`);
+  }
+}
+
+console.log(`\n=== summary (${DIALECT}) ===`);
 for (const report of reports) {
+  if (quiet && report.ok) continue;
   const mark = report.ok ? "ok  " : "FAIL";
   console.log(`${mark} ${report.path.replace(HOME, "~")}  (${report.bytes}B, ${report.lines} lines)  ${report.detail}`);
 }
 const failed = reports.filter((report) => !report.ok).length;
-console.log(`\n${reports.length - failed}/${reports.length} parsed clean`);
+const bytes = reports.reduce((sum, report) => sum + report.bytes, 0);
+console.log(`\n${reports.length - failed}/${reports.length} parsed clean (${(bytes / 1024).toFixed(0)}KB)`);
