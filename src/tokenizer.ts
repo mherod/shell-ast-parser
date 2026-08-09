@@ -441,10 +441,10 @@ export class Tokenizer {
       return;
     }
 
-    // Assignment: NAME=... (only when at command start position)
+    // Assignment: NAME=... or NAME+=... (only when at command start position)
     if (hasEquals && equalsPos > 0 && this.atCommandStart) {
       const name = value.slice(0, equalsPos);
-      if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
+      if (/^[a-zA-Z_][a-zA-Z0-9_]*\+?$/.test(name)) {
         this.tokens.push({
           type: TokenType.Assignment,
           value,

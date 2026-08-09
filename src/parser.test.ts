@@ -390,6 +390,79 @@ describe("command substitution bodies", () => {
   });
 });
 
+describe("process substitution", () => {
+  const args = (src: string) => (parseShell(src).commands[0] as any).commands[0].args;
+
+  test("<(cmd) becomes a ProcessSubstitution", () => {
+    const part = args("diff <(ls /tmp)")[0].parts[0];
+    expect(part.type).toBe("ProcessSubstitution");
+    expect(part.direction).toBe("<");
+    expect(part.body.commands[0].commands[0].name.parts[0].value).toBe("ls");
+  });
+
+  test(">(cmd) records the other direction", () => {
+    expect(args("tee >(cat)")[0].parts[0].direction).toBe(">");
+  });
+
+  test("inner ranges index the outer source", () => {
+    const src = "diff <(ls /tmp)";
+    const inner = args(src)[0].parts[0].body.commands[0].commands[0];
+    expect(src.slice(inner.range.start, inner.range.end)).toBe("ls /tmp");
+  });
+
+  test("both operands of a diff are parsed", () => {
+    const parsed = args("diff <(ls /tmp) <(ls /var)");
+    expect(parsed.map((a: any) => a.parts[0].type)).toEqual(["ProcessSubstitution", "ProcessSubstitution"]);
+  });
+
+  test("adjacent literals are kept", () => {
+    const parts = args("cat pre<(ls)post")[0].parts;
+    expect(parts.map((p: any) => p.type)).toEqual(["Word", "ProcessSubstitution", "Word"]);
+  });
+
+  test("nests inside a command substitution", () => {
+    const outer = args("echo $(diff <(a) <(b))")[0].parts[0];
+    const inner = outer.body.commands[0].commands[0];
+    expect(inner.args[0].parts[0].type).toBe("ProcessSubstitution");
+  });
+});
+
+describe("append assignments", () => {
+  const assignment = (src: string) => (parseShell(src).commands[0] as any).commands[0].assignments[0];
+
+  test("+= sets append and strips the + from the name", () => {
+    const a = assignment("PATH+=:/opt/bin");
+    expect(a.name).toBe("PATH");
+    expect(a.append).toBe(true);
+    expect(a.value.parts[0].value).toBe(":/opt/bin");
+  });
+
+  test("+= works with an array literal", () => {
+    const a = assignment("ITEMS+=(four five)");
+    expect(a.append).toBe(true);
+    expect(a.value.type).toBe("ArrayLiteral");
+    expect(a.value.elements.length).toBe(2);
+  });
+
+  test("a plain assignment is not an append", () => {
+    expect(assignment("NAME=world").append).toBe(false);
+  });
+
+  test("bare += has a null value", () => {
+    const a = assignment("EMPTY+=");
+    expect(a.append).toBe(true);
+    expect(a.value).toBeNull();
+  });
+
+  test("a + elsewhere in the name is not an assignment", () => {
+    expect(tokenize("a+b=c")[0]!.type).toBe(TokenType.Word);
+  });
+
+  test("+= with no name is not an assignment", () => {
+    expect(tokenize("+=x")[0]!.type).toBe(TokenType.Word);
+  });
+});
+
 describe("fixture: sample.sh", () => {
   test("parses the full fixture without throwing", async () => {
     const src = await Bun.file("fixtures/sample.sh").text();

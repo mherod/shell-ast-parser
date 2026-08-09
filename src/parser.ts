@@ -7,6 +7,25 @@ import type {
 import { tokenize, type Token, TokenType } from "./tokenizer.ts";
 
 /**
+ * Read a parenthesised body, starting at the index of the opening paren.
+ * Returns the text between the parens and the index just past the closing one.
+ */
+function readParenBody(raw: string, openParen: number): { body: string; next: number } {
+  let i = openParen + 1;
+  let body = "";
+  let depth = 1;
+
+  while (i < raw.length && depth > 0) {
+    if (raw[i] === "(") depth++;
+    else if (raw[i] === ")") depth--;
+    if (depth > 0) { body += raw[i]; i++; }
+  }
+  if (i < raw.length) i++; // skip )
+
+  return { body, next: i };
+}
+
+/**
  * Move every range in a subtree by `offset`. Range objects are shared between
  * sibling nodes (a word's parts all point at the token range), so each one is
  * shifted at most once.
@@ -367,7 +386,9 @@ export class Parser {
   private parseAssignment(): Assignment {
     const tok = this.expect(TokenType.Assignment);
     const eqIdx = tok.value.indexOf("=");
-    const name = tok.value.slice(0, eqIdx);
+    const lhs = tok.value.slice(0, eqIdx);
+    const append = lhs.endsWith("+");
+    const name = append ? lhs.slice(0, -1) : lhs;
     const rawValue = tok.value.slice(eqIdx + 1);
 
     // `VAR=(a b c)` is an array literal, but `VAR= (cmd)` is an empty
@@ -377,6 +398,7 @@ export class Parser {
       return {
         type: "Assignment",
         name,
+        append,
         value,
         range: { start: tok.range.start, end: value.range.end },
       };
@@ -385,6 +407,7 @@ export class Parser {
     return {
       type: "Assignment",
       name,
+      append,
       value: rawValue.length > 0 ? this.rawToCompoundWord(rawValue, tok.range) : null,
       range: tok.range,
     };
@@ -850,15 +873,8 @@ export class Parser {
           } else {
             // $( command substitution )
             const bodyStart = i + 2;
-            i += 2;
-            let body = "";
-            let depth = 1;
-            while (i < raw.length && depth > 0) {
-              if (raw[i] === "(") depth++;
-              else if (raw[i] === ")") depth--;
-              if (depth > 0) { body += raw[i]; i++; }
-            }
-            if (i < raw.length) i++; // skip )
+            const { body, next } = readParenBody(raw, i + 1);
+            i = next;
             parts.push({
               type: "CommandSubstitution",
               backtick: false,
@@ -891,6 +907,18 @@ export class Parser {
           literal += ch;
           i++;
         }
+      } else if ((ch === "<" || ch === ">") && raw[i + 1] === "(") {
+        // <(cmd) / >(cmd) process substitution
+        flushLiteral();
+        const bodyStart = i + 2;
+        const { body, next } = readParenBody(raw, i + 1);
+        i = next;
+        parts.push({
+          type: "ProcessSubstitution",
+          direction: ch,
+          body: this.parseSubstitution(body, range.start + bodyStart),
+          range,
+        });
       } else if (ch === "`") {
         flushLiteral();
         i++;

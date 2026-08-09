@@ -104,6 +104,8 @@ export interface ArrayLiteral {
 export interface Assignment {
   type: "Assignment";
   name: string;
+  /** `NAME+=value` appends rather than replaces */
+  append: boolean;
   /** null for a bare `VAR=`; discriminate on `value.type` */
   value: CompoundWord | ArrayLiteral | null;
   range: Range;

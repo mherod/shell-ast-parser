@@ -8,10 +8,10 @@ findings are re-adjudicated at the bottom.
 forever in `parseCompoundList`. That was not in the original report, which
 concluded the parser was "fundamentally sound".
 
-Findings 1–5 are defects the parser had; 6–8 are constructs it silently dropped
+Findings 1–5 are defects the parser had; 6–10 are constructs it silently dropped
 on the floor.
 
-Status: all findings below are fixed. `bun test` → 88 pass / 0 fail. `tsc --noEmit` → clean.
+Status: all findings below are fixed. `bun test` → 100 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -124,6 +124,30 @@ One behaviour change: a syntax error inside a substitution now throws
 `ParseError` instead of silently yielding an empty body. `echo $(if` is a syntax
 error in bash too.
 
+### 9. Process substitution was never represented — MEDIUM
+**File:** `src/parser.ts`, `parseWordParts`
+
+`ProcessSubstitution` existed in `ast.ts` but nothing produced it. The tokenizer
+folds `<(ls /tmp)` into the surrounding word, and `parseWordParts` had no branch
+for it, so it survived as one literal `Word` part.
+
+**Fix:** `<(` and `>(` now produce a `ProcessSubstitution` with `direction` and a
+recursively parsed body, using the same absolute-range shifting as finding 8.
+Adjacent literals are preserved (`pre<(ls)post` → Word, ProcessSubstitution,
+Word). The paren-matching loop, by then written three times, was extracted to
+`readParenBody`.
+
+### 10. `+=` assignments tokenized as words — MEDIUM
+**Files:** `src/tokenizer.ts`, `src/parser.ts`, `src/ast.ts`
+
+`ITEMS+=(x)` produced `Word("ITEMS+=")` because the assignment-name pattern
+rejected the trailing `+`. Appends were invisible to consumers.
+
+**Fix:** the name pattern accepts one trailing `+`, and `Assignment` carries
+`append: boolean` with the `+` stripped from `name`. Works for scalars, arrays
+and the bare `VAR+=` form. `a+b=c` and `+=x` remain words — neither is a valid
+assignment name.
+
 ---
 
 ## Original findings that did not hold
@@ -144,27 +168,50 @@ for code that lives in `parser.ts`.
 
 ---
 
-## Known gaps (not defects introduced here — nothing hangs or silently lies)
+## Known gaps
 
-- **Process substitution** never produces a `ProcessSubstitution` node, though
-  the type exists. `diff <(ls /tmp)` keeps `<(ls /tmp)` as one literal `Word`
-  part. Same shape of fix as finding 8.
-- **`+=` assignments** tokenize as a `Word`, not an `Assignment`: `ITEMS+=(x)`
-  yields `Word("ITEMS+=")`. Needs an `append` flag on `Assignment` and a
-  tokenizer change.
+### `parseWordParts` is quote-blind — the biggest remaining correctness issue
+
+Expansions are recognised inside single quotes, where the shell treats them as
+literal text:
+
+```
+echo '$NAME'      → [Word("'"), VariableExpansion(NAME), Word("'")]
+echo '$(rm -rf /)' → [Word("'"), CommandSubstitution(rm -rf /), Word("'")]
+```
+
+The second line matters for any consumer doing static analysis: a quoted,
+inert string is reported as a command substitution that runs `rm -rf /`. The
+quote characters are also kept in the adjacent `Word` values rather than being
+stripped, so no consumer can compensate by inspecting them.
+
+This predates the work here — `'$NAME'` behaved this way before any of these
+changes — but finding 9 does add one case to it: `"<(x)"` in double quotes is
+now read as a process substitution. Fixing it means tracking quote state while
+scanning a word, including backslash escapes in double quotes and `$'...'`
+ANSI-C quoting. It is a contained change to one function, and it is the next
+thing worth doing.
+
+### Smaller
+
 - **Arrays in argument position.** `declare -a X=(1 2)` still splits into a
   command plus a subshell — only *leading* assignments are parsed as arrays.
   Handling it means special-casing the declaration builtins (`declare`, `local`,
   `export`, `typeset`), which is arguably the consumer's job.
+- **Subscripted assignment.** `ITEMS[0]=x` tokenizes as a `Word`; the name
+  pattern allows no subscript.
 - **Quotes inside substitution capture.** The `$( )` scanner counts parens
-  without tracking quotes, so `$(grep ")" file)` closes early. Pre-existing.
+  without tracking quotes, so `$(grep ")" file)` closes early. Same root cause
+  as the quote-blindness above, in the tokenizer rather than the parser.
 
 ## Regression coverage added
 
-`src/parser.test.ts`, 88 tests total: heredoc content attachment, two-heredoc
+`src/parser.test.ts`, 100 tests total: heredoc content attachment, two-heredoc
 ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
 `[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
 detached-paren disambiguation, unterminated), background on pipelines and lists
 and inside loop bodies, substitution bodies for `$()` and backticks including
-nesting and absolute range mapping, and a `termination` block asserting that
-eight previously-hanging inputs return.
+nesting and absolute range mapping, process substitution in both directions
+including adjacent literals and nesting inside `$()`, `+=` on scalars and arrays
+with the non-assignment forms held to `Word`, and a `termination` block
+asserting that eight previously-hanging inputs return.
