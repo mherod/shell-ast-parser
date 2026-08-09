@@ -9,10 +9,10 @@ forever in `parseCompoundList`. That was not in the original report, which
 concluded the parser was "fundamentally sound".
 
 Findings 1–5 are defects the parser had, 6–10 are constructs it silently dropped
-on the floor, and 11–28 are places where the AST asserted things about the
+on the floor, and 11–29 are places where the AST asserted things about the
 source that were not true.
 
-Status: all findings below are fixed. `bun test` → 288 pass / 0 fail. `tsc --noEmit` → clean.
+Status: all findings below are fixed. `bun test` → 296 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -565,6 +565,37 @@ Distinguishing the three is what lets a consumer answer the question that
 matters in practice: whether a pattern will behave the same on macOS as on
 Linux.
 
+### 29. Builtin shadowing was ignored — MEDIUM
+**Files:** `src/tokenizer.ts`, `src/parser.ts`
+
+`declare`, `typeset`, `local`, `export`, `readonly`, `let`, `[` and `test` were
+recognised purely by name. A script that defines a function with one of those
+names got the builtin's tree anyway, describing arithmetic or a conditional
+where the shell would call the function.
+
+**Fix:** both layers track function definitions as they go, and a name that has
+been defined no longer selects the builtin form. `let x=1` after
+`let() { :; }` is an ordinary command with one word argument; a shadowed
+declaration builtin stops treating `X=(1 2)` as an assignment.
+
+The single forward pass is not a shortcut here — it is the semantics. A
+function shadows a builtin only once its definition has *run*, so a call above
+the definition genuinely uses the builtin:
+
+```
+let x=1          # builtin: the function does not exist yet
+let() { :; }
+let y=2          # the function
+```
+
+Both orders are covered by tests. `[[ … ]]`, `for` and the other reserved words
+are keywords rather than builtins and cannot be shadowed at all.
+
+Where this over-reaches: a definition inside a subshell, or inside a branch
+that never runs, is treated as shadowing from that point on, because deciding
+otherwise needs scope and reachability analysis. The subshell case has a test
+recording the behaviour rather than leaving it to be discovered.
+
 ---
 
 ## Original findings that did not hold
@@ -587,16 +618,15 @@ for code that lives in `parser.ts`.
 
 ## Known gaps
 
-- **Builtin shadowing is not tracked.** `declare`, `export`, `local`,
-  `readonly`, `typeset`, `let`, `[` and `test` are recognised by name; a
-  user-defined function of the same name would change what they mean at
-  runtime.
+- **Shadowing is tracked by source order, not reachability.** A function
+  defined inside a subshell or an untaken branch still counts from that point
+  on; separating those needs scope and flow analysis.
 - **Portability is described, not judged.** GNU-only regex constructs get their
   own node types, but nothing decides whether the host's libc supports them.
 
 ## Regression coverage added
 
-`src/parser.test.ts`, 288 tests total: heredoc content attachment, two-heredoc
+`src/parser.test.ts`, 296 tests total: heredoc content attachment, two-heredoc
 ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
 `[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
 detached-paren disambiguation, unterminated), background on pipelines and lists

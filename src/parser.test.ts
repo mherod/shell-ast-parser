@@ -1627,6 +1627,49 @@ describe("glob decomposition", () => {
   });
 });
 
+describe("builtin shadowing", () => {
+  const kinds = (src: string) =>
+    parseShell(src).commands.map((c: any) => (c.commands?.[0] ?? c).type);
+
+  test("a function defined first takes the name from let", () => {
+    expect(kinds("let() { :; }\nlet x=1")).toEqual(["FunctionDef", "SimpleCommand"]);
+  });
+
+  test("a definition after the call does not reach back", () => {
+    // the builtin is still in effect when the first line runs
+    expect(kinds("let x=1\nlet() { :; }")).toEqual(["LetCommand", "FunctionDef"]);
+  });
+
+  test("the function keyword form shadows too", () => {
+    expect(kinds("function let { :; }\nlet x=1")).toEqual(["FunctionDef", "SimpleCommand"]);
+  });
+
+  test("test and [ can be shadowed", () => {
+    expect(kinds("test() { :; }\ntest -f x")).toEqual(["FunctionDef", "SimpleCommand"]);
+    expect(kinds("[() { :; }\n[ -f x ]")).toEqual(["FunctionDef", "SimpleCommand"]);
+  });
+
+  test("a shadowed declaration builtin stops treating its args as assignments", () => {
+    const command = (parseShell("export() { :; }\nexport A=1").commands[1] as any).commands[0];
+    expect(command.type).toBe("SimpleCommand");
+    expect(command.args[0].type).toBe("CompoundWord");
+  });
+
+  test("an unrelated function changes nothing", () => {
+    expect(kinds("f() { :; }\nlet x=1")).toEqual(["FunctionDef", "LetCommand"]);
+  });
+
+  test("[[ … ]] is a keyword and cannot be shadowed", () => {
+    expect(kinds("let() { :; }\n[[ -f x ]]")).toEqual(["FunctionDef", "TestCommand"]);
+  });
+
+  test("a definition inside a subshell is treated as shadowing, which over-reaches", () => {
+    // bash would confine it to the subshell and keep the builtin outside;
+    // tracking that needs scope analysis this parser does not do
+    expect(kinds("(let() { :; })\nlet x=1")).toEqual(["Subshell", "SimpleCommand"]);
+  });
+});
+
 describe("fixture: sample.sh", () => {
   test("parses the full fixture without throwing", async () => {
     const src = await Bun.file("fixtures/sample.sh").text();

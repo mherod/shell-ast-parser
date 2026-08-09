@@ -355,6 +355,12 @@ export class Parser {
   private comments: Comment[] = [];
   /** Heredoc targets awaiting a body, in the order the tokenizer will emit them */
   private pendingHereDocs: HereDoc[] = [];
+  /**
+   * Functions defined so far. A function shadows a builtin of the same name
+   * only once its definition has run, so a single forward pass matches the
+   * shell: names seen earlier in the source shadow, later ones do not.
+   */
+  private definedFunctions: Set<string> = new Set();
 
   constructor(tokens: Token[]) {
     this.tokens = tokens;
@@ -644,14 +650,17 @@ export class Parser {
     const nameToken = this.advance();
     const name = this.tokenToCompoundWord(nameToken);
 
-    // Builtins whose arguments are an expression rather than plain words. A
-    // function of the same name would shadow these, which is not tracked here.
+    // Builtins whose arguments are an expression rather than plain words —
+    // unless a function defined earlier has taken the name, in which case this
+    // is an ordinary call to it
     const builtin = literalValue(name);
-    if (builtin === "let") {
-      return this.parseLetCommand(start, assignments, redirects);
-    }
-    if (builtin === "[" || builtin === "test") {
-      return this.parseBracketTest(start, builtin, assignments, redirects);
+    if (builtin !== null && !this.definedFunctions.has(builtin)) {
+      if (builtin === "let") {
+        return this.parseLetCommand(start, assignments, redirects);
+      }
+      if (builtin === "[" || builtin === "test") {
+        return this.parseBracketTest(start, builtin, assignments, redirects);
+      }
     }
 
     const args: (CompoundWord | Assignment)[] = [];
@@ -1338,6 +1347,7 @@ export class Parser {
   private parseFunctionDef(): FunctionDef {
     const start = this.peek().range.start;
     const nameTok = this.advance();
+    this.definedFunctions.add(nameTok.value);
     this.advance(); // (
     this.advance(); // )
     this.skipNewlines();
@@ -1356,6 +1366,7 @@ export class Parser {
   private parseFunctionKeyword(): FunctionDef {
     const start = this.expect(TokenType.Keyword, "function").range.start;
     const nameTok = this.expect(TokenType.Word);
+    this.definedFunctions.add(nameTok.value);
 
     // Optional ()
     if (this.atAny(TokenType.Operator, "(")) {

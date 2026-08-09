@@ -134,14 +134,18 @@ Assignments cover scalars, arrays (`X=(a b)`), appends (`X+=y`), subscripts
 (`X[i]=y`), and declaration builtins, where the assignment is an argument:
 `declare -a X=(1 2)` is one command.
 
+Builtins recognised by name — `declare`, `export`, `local`, `readonly`,
+`typeset`, `let`, `[`, `test` — give way to a function of the same name defined
+earlier in the script, matching the shell: a call above the definition still
+uses the builtin, because the definition has not run yet.
+
 ## Known limitations
 
 - **`GlobPattern` is syntactic.** It marks unquoted metacharacters and
   decomposes them; it does not tell you whether anything matches.
-- **Builtin shadowing is not tracked.** `declare`, `export`, `local`,
-  `readonly`, `typeset`, `let`, `[` and `test` are recognised by name, so a
-  user-defined function of the same name would change what they mean at
-  runtime.
+- **Shadowing is tracked by source order, not reachability.** A function
+  defined inside a subshell or an untaken branch still counts as shadowing from
+  that point on; separating those needs scope and flow analysis.
 - **Portability is described, not judged.** GNU-only regex constructs get their
   own node types, but nothing decides whether your libc supports them.
 

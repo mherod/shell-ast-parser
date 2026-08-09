@@ -265,6 +265,12 @@ export class Tokenizer {
   private inTestCommand: boolean = false;
   /** Whether the next word is the regex operand of `=~` */
   private afterRegexOperator: boolean = false;
+  /**
+   * Functions defined so far. A function shadows a builtin of the same name
+   * only once its definition has run, so a single forward pass matches the
+   * shell: names seen earlier in the source shadow, later ones do not.
+   */
+  private definedFunctions: Set<string> = new Set();
 
   /** Whether the last non-whitespace token allows a keyword next */
   private get atCommandStart(): boolean {
@@ -368,6 +374,7 @@ export class Tokenizer {
         this.pos++;
         if (ch === "(") this.atCommandStart = true;
         if (opensArray) this.inDeclarationCommand = declarationContext;
+        if (ch === ")") this.recordFunctionDefinition();
         continue;
       }
 
@@ -729,13 +736,18 @@ export class Tokenizer {
     }
 
     const wasCommandStart = this.atCommandStart;
+    const afterFunctionKeyword = this.lastTokenIs(TokenType.Keyword, "function");
     this.tokens.push({
       type: TokenType.Word,
       value,
       range: { start, end: this.pos },
     });
     this.atCommandStart = false;
-    if (wasCommandStart && DECLARATION_BUILTINS.has(value)) {
+
+    if (afterFunctionKeyword) this.definedFunctions.add(value);
+
+    // A user function of the same name shadows the builtin
+    if (wasCommandStart && DECLARATION_BUILTINS.has(value) && !this.definedFunctions.has(value)) {
       this.inDeclarationCommand = true;
     }
     if (this.inTestCommand && value === "=~") {
@@ -775,6 +787,20 @@ export class Tokenizer {
       range: { start, end: this.pos },
     });
     this.atCommandStart = false;
+  }
+
+  /**
+   * Called on `)`: the `name ( )` that just closed is a function definition, so
+   * `name` shadows any builtin of the same name from here on. `(cmd)` is a
+   * subshell and does not match, since a word must sit directly before the `(`.
+   */
+  private recordFunctionDefinition(): void {
+    const open = this.tokens[this.tokens.length - 2];
+    const name = this.tokens[this.tokens.length - 3];
+
+    if (open?.type === TokenType.Operator && open.value === "(" && name?.type === TokenType.Word) {
+      this.definedFunctions.add(name.value);
+    }
   }
 
   private lastTokenIs(type: TokenType, value: string): boolean {
