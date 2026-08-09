@@ -9,10 +9,10 @@ forever in `parseCompoundList`. That was not in the original report, which
 concluded the parser was "fundamentally sound".
 
 Findings 1–5 are defects the parser had, 6–10 are constructs it silently dropped
-on the floor, and 11–24 are places where the AST asserted things about the
+on the floor, and 11–25 are places where the AST asserted things about the
 source that were not true.
 
-Status: all findings below are fixed. `bun test` → 238 pass / 0 fail. `tsc --noEmit` → clean.
+Status: all findings below are fixed. `bun test` → 256 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -445,6 +445,35 @@ though it decides whether execution falls through.
 **Fix:** both operators are tokenized, and `CaseItem` carries `terminator`
 (`";;" | ";&" | ";;&" | null`, null when the final item omits it).
 
+### 25. Glob patterns were flat text — MEDIUM
+**Files:** `src/ast.ts`, `src/parser.ts`
+
+`GlobPattern.value` held the pattern as written, so the members of `[a-z0-9]`
+and the alternatives of `@(a|b)` were a string to be re-parsed by every
+consumer. An expansion inside an alternative — `@($x|b)` — was text rather than
+a node, unlike everywhere else in the AST.
+
+**Fix:** `GlobPattern` becomes a union discriminated on `kind`, each variant
+keeping `value` as written so existing consumers still work:
+
+- `wildcard` — `*` or `?`
+- `bracket` — `negated` plus `members`, each a `GlobChar`, `GlobRange`
+  (`a-z`) or `GlobClass` (`[:alpha:]`, `[=a=]`, `[.a.]`)
+- `extended` — the `op` and `alternatives`, each a `CompoundWord`
+
+Alternatives being words is what closes the gap noted under finding 21:
+`@($x|b)` now holds a `VariableExpansion`, `@(a|$(f))` a parsed
+`CommandSubstitution`, and `@(a|@(b|c))` nests.
+
+A bracket bug fell out of writing this: `[[:alpha:]]` was cut at the class's own
+`]`, yielding `[[:alpha:]` plus a stray `]`. Bracket sub-expressions now carry
+their own terminator.
+
+Two details worth keeping straight, both verified against bash's behaviour: a
+`-` without a neighbour is a literal member (`[-a]`, `[a-]`), and `|` inside a
+bracket does not split alternatives — but at word level `echo [b|c]` really
+does pipe, because the tokenizer splits there exactly as the shell does.
+
 ---
 
 ## Original findings that did not hold
@@ -467,9 +496,6 @@ for code that lives in `parser.ts`.
 
 ## Known gaps
 
-- **Glob patterns are not decomposed.** `GlobPattern.value` is the pattern text,
-  so the alternatives of `@(a|b)` and the members of `[abc]` are not separate
-  nodes, and an expansion inside one is not a `VariableExpansion`.
 - **`[ … ]` (the `test` builtin) is not modelled.** Only the `[[ … ]]` keyword
   form gets an expression tree; `[ -f x ]` stays a `SimpleCommand` with `[` as
   its name, because it genuinely is an ordinary command.
@@ -479,7 +505,7 @@ for code that lives in `parser.ts`.
 
 ## Regression coverage added
 
-`src/parser.test.ts`, 238 tests total: heredoc content attachment, two-heredoc
+`src/parser.test.ts`, 256 tests total: heredoc content attachment, two-heredoc
 ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
 `[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
 detached-paren disambiguation, unterminated), background on pipelines and lists

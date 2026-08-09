@@ -1281,6 +1281,116 @@ describe("case terminators", () => {
   });
 });
 
+describe("glob decomposition", () => {
+  const glob = (src: string) => (parseShell(src).commands[0] as any).commands[0].args[0].parts[0];
+  const members = (src: string) =>
+    glob(src).members.map((m: any) =>
+      m.type === "GlobRange" ? `${m.from}-${m.to}` :
+      m.type === "GlobClass" ? `${m.kind}(${m.name})` :
+      m.value);
+  const alternatives = (src: string) =>
+    glob(src).alternatives.map((a: any) => a.parts.map((p: any) => p.value ?? p.expression ?? p.type).join(""));
+
+  test("wildcards report their kind", () => {
+    expect(glob("echo *.sh").kind).toBe("wildcard");
+    expect(glob("echo file?.x").parts?.length).toBeUndefined();
+  });
+
+  describe("bracket expressions", () => {
+    test("single characters", () => {
+      expect(glob("echo [abc]").kind).toBe("bracket");
+      expect(members("echo [abc]")).toEqual(["a", "b", "c"]);
+    });
+
+    test("ranges", () => {
+      expect(members("echo [a-z0-9_]")).toEqual(["a-z", "0-9", "_"]);
+    });
+
+    test("negation, either spelling", () => {
+      expect(glob("echo [!a-z]").negated).toBe(true);
+      expect(glob("echo [^abc]").negated).toBe(true);
+      expect(glob("echo [abc]").negated).toBe(false);
+    });
+
+    test("a dash with no neighbour is a literal", () => {
+      expect(members("echo [-a]")).toEqual(["-", "a"]);
+      expect(members("echo [a-]")).toEqual(["a", "-"]);
+    });
+
+    test("a leading ] is a member", () => {
+      expect(members("echo []a]")).toEqual(["]", "a"]);
+    });
+
+    test("POSIX classes, equivalences and collating elements", () => {
+      expect(members("echo [[:alpha:]]")).toEqual(["class(alpha)"]);
+      expect(members("echo [[=a=]]")).toEqual(["equivalence(a)"]);
+      expect(members("echo [[.a.]]")).toEqual(["collating(a)"]);
+    });
+
+    test("classes mix with ordinary members", () => {
+      expect(members("echo [[:upper:][:digit:]x]")).toEqual(["class(upper)", "class(digit)", "x"]);
+    });
+
+    test("a class's ] does not end the expression", () => {
+      expect(glob("echo [[:alpha:]]").value).toBe("[[:alpha:]]");
+    });
+
+    test("member ranges index the source", () => {
+      const src = "echo [a-z]";
+      const member = glob(src).members[0];
+      expect(src.slice(member.range.start, member.range.end)).toBe("a-z");
+    });
+  });
+
+  describe("extended globs", () => {
+    test("alternatives are separated", () => {
+      expect(glob("echo @(a|b)").kind).toBe("extended");
+      expect(glob("echo @(a|b)").op).toBe("@");
+      expect(alternatives("echo @(a|b)")).toEqual(["a", "b"]);
+    });
+
+    test("an expansion inside an alternative is a node", () => {
+      const parts = glob("echo @($x|b)").alternatives[0].parts;
+      expect(parts[0].type).toBe("VariableExpansion");
+      expect(parts[0].expression).toBe("x");
+    });
+
+    test("a command substitution inside an alternative is parsed", () => {
+      const sub = glob("echo @(a|$(f))").alternatives[1].parts[0];
+      expect(sub.type).toBe("CommandSubstitution");
+      expect(sub.body.commands[0].commands[0].name.parts[0].value).toBe("f");
+    });
+
+    test("alternatives may hold other globs", () => {
+      const parts = glob("echo !(*.o|*.a)").alternatives[0].parts;
+      expect(parts[0].kind).toBe("wildcard");
+      expect(parts[1].value).toBe(".o");
+    });
+
+    test("groups nest", () => {
+      const inner = glob("echo @(a|@(b|c))").alternatives[1].parts[0];
+      expect(inner.kind).toBe("extended");
+      expect(inner.alternatives.map((a: any) => a.parts[0].value)).toEqual(["b", "c"]);
+    });
+
+    test("a | inside a bracket does not split alternatives", () => {
+      expect(alternatives("echo @(a|[b|c])")).toEqual(["a", "[b|c]"]);
+    });
+
+    test("alternative ranges index the source", () => {
+      const src = "echo @(abc|def)";
+      expect(glob(src).alternatives.map((a: any) => src.slice(a.range.start, a.range.end)))
+        .toEqual(["abc", "def"]);
+    });
+  });
+
+  test("malformed patterns do not hang", () => {
+    for (const src of ["echo [", "echo []", "echo [!]", "echo [[:", "echo [[:alpha:", "echo @(", "echo @(a|b"]) {
+      expect(() => parseShell(src)).not.toThrow();
+    }
+  });
+});
+
 describe("fixture: sample.sh", () => {
   test("parses the full fixture without throwing", async () => {
     const src = await Bun.file("fixtures/sample.sh").text();

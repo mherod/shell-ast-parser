@@ -111,8 +111,12 @@ than redirections.
 
 Words resolve into parts: literals, variable expansions (`$x`, `${x:-d}`),
 command substitutions (`$( )` and backticks), arithmetic (`$(( ))`), process
-substitutions (`<( )`, `>( )`), and glob patterns — `*`, `?`, `[…]` bracket
-expressions, and extended globs `?(…)`, `*(…)`, `+(…)`, `@(…)`, `!(…)`.
+substitutions (`<( )`, `>( )`), and glob patterns.
+
+Globs decompose. A `GlobPattern` is a `wildcard` (`*`, `?`), a `bracket` with
+`negated` and `members` — characters, `a-z` ranges and POSIX classes such as
+`[:alpha:]` — or an `extended` group (`?(…)`, `*(…)`, `+(…)`, `@(…)`, `!(…)`)
+whose `alternatives` are words, so `@($x|b)` keeps its expansion as a node.
 Quoting and escaping defeat globbing, as in the shell. At the start of a
 command `!` stays the negation keyword, so `!(cmd)` negates a subshell.
 
@@ -122,11 +126,8 @@ Assignments cover scalars, arrays (`X=(a b)`), appends (`X+=y`), subscripts
 
 ## Known limitations
 
-- **`GlobPattern` is syntactic, and kept whole.** It marks unquoted
-  metacharacters; it does not tell you whether anything matches. The value is
-  the pattern text, so the alternatives of `@(a|b)` and the members of `[abc]`
-  are not separate nodes — and an expansion inside one, as in `@($x|b)`, is
-  part of that text rather than a `VariableExpansion`.
+- **`GlobPattern` is syntactic.** It marks unquoted metacharacters and
+  decomposes them; it does not tell you whether anything matches.
 - **`[ … ]` is not modelled as a test.** Only the `[[ … ]]` keyword form gets an
   expression tree; `[ -f x ]` is a `SimpleCommand` named `[`, because that is
   what it is — an ordinary command.

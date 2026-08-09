@@ -139,11 +139,69 @@ export interface ProcessSubstitution {
   range: Range;
 }
 
-export interface GlobPattern {
-  type: "GlobPattern";
+/** A single character listed in a bracket expression */
+export interface GlobChar {
+  type: "GlobChar";
   value: string;
   range: Range;
 }
+
+/** `a-z` inside a bracket expression */
+export interface GlobRange {
+  type: "GlobRange";
+  from: string;
+  to: string;
+  range: Range;
+}
+
+/** A POSIX class, equivalence or collating element: `[:alpha:]`, `[=a=]`, `[.a.]` */
+export interface GlobClass {
+  type: "GlobClass";
+  /** the name without its delimiters, e.g. "alpha" */
+  name: string;
+  kind: "class" | "equivalence" | "collating";
+  range: Range;
+}
+
+export type GlobBracketMember = GlobChar | GlobRange | GlobClass;
+
+/** `*` or `?` */
+export interface GlobWildcard {
+  type: "GlobPattern";
+  kind: "wildcard";
+  value: "*" | "?";
+  range: Range;
+}
+
+/** `[abc]`, `[!a-z]`, `[[:digit:]]` */
+export interface GlobBracket {
+  type: "GlobPattern";
+  kind: "bracket";
+  /** the pattern as written, brackets included */
+  value: string;
+  /** `[!…]` or `[^…]` */
+  negated: boolean;
+  members: GlobBracketMember[];
+  range: Range;
+}
+
+/**
+ * An extended glob: `?(…)`, `*(…)`, `+(…)`, `@(…)`, `!(…)`. Alternatives are
+ * words in their own right, so `@($x|b)` keeps its expansion and `@(a|@(b|c))`
+ * nests.
+ */
+export interface GlobExtended {
+  type: "GlobPattern";
+  kind: "extended";
+  /** the pattern as written, operator and parens included */
+  value: string;
+  op: "?" | "*" | "+" | "@" | "!";
+  alternatives: CompoundWord[];
+  range: Range;
+}
+
+/** Discriminate on `kind`; every variant keeps `value` as written */
+export type GlobPattern = GlobWildcard | GlobBracket | GlobExtended;
 
 export interface Comment {
   type: "Comment";

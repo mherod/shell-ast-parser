@@ -1,6 +1,7 @@
 import type {
   Script, Command, SimpleCommand, Pipeline, ListItem,
   CompoundWord, WordPart, Redirect, HereDoc, Assignment, ArrayLiteral, Range, QuoteContext,
+  GlobBracketMember,
   IfClause, ForClause, ArithmeticForClause, ArithmeticCommand, ArithmeticExpr,
   LetCommand, LetExpression, TestCommand, TestExpr,
   WhileClause, UntilClause, CaseClause, CaseItem,
@@ -87,11 +88,113 @@ function findBracketClose(raw: string, start: number): number {
   if (raw[i] === "]") i++;
 
   while (i < raw.length) {
+    // `[:alpha:]`, `[=a=]` and `[.a.]` carry their own `]`, which does not end
+    // the enclosing expression
+    const inner = raw[i] === "[" ? CLASS_DELIMITERS[raw[i + 1] ?? ""] : undefined;
+    if (inner !== undefined) {
+      const close = raw.indexOf(inner, i + 2);
+      if (close !== -1) {
+        i = close + inner.length;
+        continue;
+      }
+    }
+
     if (raw[i] === "]") return i;
     i++;
   }
 
   return -1;
+}
+
+/** Opening character of a bracket sub-expression → the sequence that closes it */
+const CLASS_DELIMITERS: Record<string, string | undefined> = {
+  ":": ":]",
+  "=": "=]",
+  ".": ".]",
+};
+
+const CLASS_KINDS: Record<string, "class" | "equivalence" | "collating"> = {
+  ":": "class",
+  "=": "equivalence",
+  ".": "collating",
+};
+
+/**
+ * Break the inside of a bracket expression into its members. A `-` that has no
+ * neighbour on one side is a literal, so `[-a]` and `[a-]` list a dash.
+ */
+function parseBracketMembers(inner: string, offset: number): GlobBracketMember[] {
+  const members: GlobBracketMember[] = [];
+  let i = 0;
+
+  while (i < inner.length) {
+    const closer = inner[i] === "[" ? CLASS_DELIMITERS[inner[i + 1] ?? ""] : undefined;
+    if (closer !== undefined) {
+      const close = inner.indexOf(closer, i + 2);
+      if (close !== -1) {
+        members.push({
+          type: "GlobClass",
+          name: inner.slice(i + 2, close),
+          kind: CLASS_KINDS[inner[i + 1]!]!,
+          range: { start: offset + i, end: offset + close + closer.length },
+        });
+        i = close + closer.length;
+        continue;
+      }
+    }
+
+    // `a-z`, but only when a character follows the dash
+    if (inner[i + 1] === "-" && i + 2 < inner.length && inner[i + 2] !== "]") {
+      members.push({
+        type: "GlobRange",
+        from: inner[i]!,
+        to: inner[i + 2]!,
+        range: { start: offset + i, end: offset + i + 3 },
+      });
+      i += 3;
+      continue;
+    }
+
+    members.push({ type: "GlobChar", value: inner[i]!, range: { start: offset + i, end: offset + i + 1 } });
+    i++;
+  }
+
+  return members;
+}
+
+/**
+ * Split an extended glob's body on its top-level `|`. Nested groups, bracket
+ * expressions and quotes are stepped over — `@(a|[b|c])` has one alternative
+ * either side of the first bar only.
+ */
+function splitAlternatives(text: string): { text: string; offset: number }[] {
+  const alternatives: { text: string; offset: number }[] = [];
+  let depth = 0;
+  let start = 0;
+  let i = 0;
+
+  while (i < text.length) {
+    const ch = text[i]!;
+
+    if (ch === "\\") { i += 2; continue; }
+    if (ch === "'" || ch === '"') { i = skipQuoted(text, i); continue; }
+
+    if (ch === "[") {
+      const close = findBracketClose(text, i);
+      if (close !== -1) { i = close + 1; continue; }
+    }
+
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    else if (ch === "|" && depth === 0) {
+      alternatives.push({ text: text.slice(start, i), offset: start });
+      start = i + 1;
+    }
+    i++;
+  }
+
+  alternatives.push({ text: text.slice(start), offset: start });
+  return alternatives;
 }
 
 /**
@@ -1345,23 +1448,46 @@ export class Parser {
           i++;
         }
       } else if (quote === null && EXTGLOB_LEADS.includes(ch) && raw[i + 1] === "(") {
-        // Extended glob: ?(a|b), *(…), +(…), @(…), !(…). The whole group is one
-        // pattern — its alternatives are not parsed, matching how [abc] is kept
-        // whole.
+        // Extended glob: ?(a|b), *(…), +(…), @(…), !(…)
         flushLiteral(i);
         const start = i;
-        const { next } = readDelimited(raw, i + 1, "(", ")");
+        const bodyStart = i + 2;
+        const { body, next } = readDelimited(raw, i + 1, "(", ")");
         i = next;
-        parts.push({ type: "GlobPattern", value: raw.slice(start, i), range: at(start, i) });
+        parts.push({
+          type: "GlobPattern",
+          kind: "extended",
+          value: raw.slice(start, i),
+          op: ch as "?" | "*" | "+" | "@" | "!",
+          // Each alternative is a word, so expansions and nested globs inside
+          // it become nodes rather than text
+          alternatives: splitAlternatives(body).map(alternative =>
+            this.rawToCompoundWord(
+              alternative.text,
+              at(bodyStart + alternative.offset, bodyStart + alternative.offset + alternative.text.length),
+              offset + bodyStart + alternative.offset,
+            ),
+          ),
+          range: at(start, i),
+        });
       } else if (quote === null && (ch === "*" || ch === "?")) {
         // Glob metacharacters only glob unquoted — "*.ts" is a literal filename
         flushLiteral(i);
-        parts.push({ type: "GlobPattern", value: ch, range: at(i, i + 1) });
+        parts.push({ type: "GlobPattern", kind: "wildcard", value: ch, range: at(i, i + 1) });
         i++;
       } else if (quote === null && ch === "[" && findBracketClose(raw, i) !== -1) {
         const close = findBracketClose(raw, i);
         flushLiteral(i);
-        parts.push({ type: "GlobPattern", value: raw.slice(i, close + 1), range: at(i, close + 1) });
+        const negated = raw[i + 1] === "!" || raw[i + 1] === "^";
+        const innerStart = i + 1 + (negated ? 1 : 0);
+        parts.push({
+          type: "GlobPattern",
+          kind: "bracket",
+          value: raw.slice(i, close + 1),
+          negated,
+          members: parseBracketMembers(raw.slice(innerStart, close), offset + innerStart),
+          range: at(i, close + 1),
+        });
         i = close + 1;
       } else if (quote === null && (ch === "<" || ch === ">") && raw[i + 1] === "(") {
         // <(cmd) / >(cmd) process substitution — never inside quotes
