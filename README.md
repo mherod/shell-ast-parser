@@ -145,6 +145,13 @@ whose `alternatives` are words, so `@($x|b)` keeps its expansion as a node.
 Quoting and escaping defeat globbing, as in the shell. At the start of a
 command `!` stays the negation keyword, so `!(cmd)` negates a subshell.
 
+Braces expand. `{a,b,c}` is a `BraceExpansion` of `kind: "list"` whose `items`
+are words, and `{0..9}` one of `kind: "sequence"` keeping `from`, `to` and an
+optional `step` as written. Unlike a glob it consults nothing — the shell writes
+out one copy of the word per item either way. Braces that cannot expand stay
+literal, so `{a}` and the `{}` of `find -exec` are ordinary text, and `{ cmd; }`
+is still a brace group: what separates them is the space the shell insists on.
+
 Assignments cover scalars, arrays (`X=(a b)`), appends (`X+=y`), subscripts
 (`X[i]=y`), and declaration builtins, where the assignment is an argument:
 `declare -a X=(1 2)` is one command.
@@ -190,6 +197,12 @@ so `name` is null and any trailing words become `args`.
 **Expansions may drop their braces.** `$arg[0,1]` is a subscripted expansion
 rather than an expansion followed by a glob bracket, and `$#arg` is a length.
 
+**Blocks and conditions take other shapes.** `if cond { … }` needs no `then` or
+`fi`, `{ … } always { … }` runs the second group either way and lands on
+`BraceGroup.always`, and a case item may end with `;|` where bash writes `;;&`.
+A case pattern may hold a group or an unquoted space — `(*# SKIP*)` is one
+pattern — and `<->` is a numeric range wherever a pattern may appear.
+
 ## Known limitations
 
 - **`GlobPattern` is syntactic.** It marks unquoted metacharacters and
@@ -199,11 +212,11 @@ rather than an expansion followed by a glob bracket, and `$#arg` is a length.
   that point on; separating those needs scope and flow analysis.
 - **Portability is described, not judged.** GNU-only regex constructs get their
   own node types, but nothing decides whether your libc supports them.
-- **zsh coverage is not complete.** The constructs below are supported; the
-  parser still refuses some of what the densest plugin internals use, such as
-  `${(f)...}` expansion flags in every position and some `case` patterns. Each
-  raises a `ParseError` naming the position rather than parsing to something
-  plausible.
+- **zsh is covered by what has been run through it.** Every file of a prezto
+  install parses — 381 files and about 2 MB, including powerlevel10k's engine
+  and zsh-syntax-highlighting — but zsh is large, and what no corpus exercised
+  is untested rather than known to work. Anything unsupported raises a
+  `ParseError` naming the position rather than parsing to something plausible.
 
 ## Development
 
