@@ -9,10 +9,10 @@ forever in `parseCompoundList`. That was not in the original report, which
 concluded the parser was "fundamentally sound".
 
 Findings 1–5 are defects the parser had, 6–10 are constructs it silently dropped
-on the floor, and 11–22 are places where the AST asserted things about the
+on the floor, and 11–24 are places where the AST asserted things about the
 source that were not true.
 
-Status: all findings below are fixed. `bun test` → 221 pass / 0 fail. `tsc --noEmit` → clean.
+Status: all findings below are fixed. `bun test` → 238 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -409,6 +409,42 @@ and `let() { … }` is still a function definition. A user-defined function name
 `let` would shadow the builtin, which this does not track — the same caveat as
 finding 17.
 
+### 23. `[[ … ]]` was a flat word list, and `<` in it was a redirect — HIGH
+**Files:** `src/ast.ts`, `src/tokenizer.ts`, `src/parser.ts`
+
+`parseDoubleSquareBracket` returned a `SimpleCommand` named `[[` whose args were
+every token including the closing `]]`, under a `// Treat [[ ... ]] as a simple
+command for now`. Operators, grouping and negation were indistinguishable from
+operands.
+
+Worse, `[[ a < b ]]` lexed the `<` as a **redirection**. `<` and `>` compare
+strings inside `[[ … ]]`, so the tree claimed a file redirect the source never
+wrote — the same class of error as `(( i < 10 ))` in finding 21.
+
+**Fix:** a `TestCommand` node with a real expression tree — `TestUnary`,
+`TestBinary`, `TestLogical`, `TestNegation` and `TestValue` for a bare word.
+`||` binds loosest, then `&&`, then `!`, and parentheses group. The tokenizer
+tracks `[[ … ]]` and emits `<`/`>` as operators inside it; outside, and after
+`]]`, they remain redirections.
+
+Operands stay `CompoundWord`s, so a pattern keeps its parts: the fixture's
+`[[ "$NAME" == w* && -n "$NAME" ]]` holds a `GlobPattern` in the right operand
+of the `==`.
+
+This changes the shape of an existing node: `[[ … ]]` used to be a
+`SimpleCommand`, and the repository's own test asserted that. The test now
+asserts the expression instead — modelling the contents was the point.
+
+### 24. `case` fallthrough terminators failed to parse — MEDIUM
+**Files:** `src/tokenizer.ts`, `src/parser.ts`, `src/ast.ts`
+
+`readOperator` knew `;;` but not `;&` or `;;&`, so both split into `;` plus `&`
+and threw a `ParseError`. Which terminator an item used was also not recorded,
+though it decides whether execution falls through.
+
+**Fix:** both operators are tokenized, and `CaseItem` carries `terminator`
+(`";;" | ";&" | ";;&" | null`, null when the final item omits it).
+
 ---
 
 ## Original findings that did not hold
@@ -434,14 +470,16 @@ for code that lives in `parser.ts`.
 - **Glob patterns are not decomposed.** `GlobPattern.value` is the pattern text,
   so the alternatives of `@(a|b)` and the members of `[abc]` are not separate
   nodes, and an expansion inside one is not a `VariableExpansion`.
-- **`case` patterns and `[[ … ]]` contents** are words, not test expressions.
+- **`[ … ]` (the `test` builtin) is not modelled.** Only the `[[ … ]]` keyword
+  form gets an expression tree; `[ -f x ]` stays a `SimpleCommand` with `[` as
+  its name, because it genuinely is an ordinary command.
 - **Builtin shadowing is not tracked.** `declare`, `export`, `local`,
   `readonly`, `typeset` and `let` are recognised by name; a user-defined
   function of the same name would change what they mean at runtime.
 
 ## Regression coverage added
 
-`src/parser.test.ts`, 221 tests total: heredoc content attachment, two-heredoc
+`src/parser.test.ts`, 238 tests total: heredoc content attachment, two-heredoc
 ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
 `[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
 detached-paren disambiguation, unterminated), background on pipelines and lists

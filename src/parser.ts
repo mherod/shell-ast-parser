@@ -2,12 +2,25 @@ import type {
   Script, Command, SimpleCommand, Pipeline, ListItem,
   CompoundWord, WordPart, Redirect, HereDoc, Assignment, ArrayLiteral, Range, QuoteContext,
   IfClause, ForClause, ArithmeticForClause, ArithmeticCommand, ArithmeticExpr,
-  LetCommand, LetExpression,
+  LetCommand, LetExpression, TestCommand, TestExpr,
   WhileClause, UntilClause, CaseClause, CaseItem,
   Subshell, BraceGroup, FunctionDef, Comment, Coproc,
 } from "./ast.ts";
 import { tokenize, readHereDocHeader, skipHereDocBodies, readExpansionExtent, splitArithmeticClauses, EXTGLOB_LEADS, type Token, TokenType } from "./tokenizer.ts";
 import { parseArithmetic } from "./arithmetic.ts";
+
+/** Single-operand conditional operators, from bash's test builtin */
+const TEST_UNARY_OPS = new Set([
+  "-a", "-b", "-c", "-d", "-e", "-f", "-g", "-h", "-k", "-p", "-r", "-s", "-t",
+  "-u", "-w", "-x", "-G", "-L", "-N", "-O", "-S", "-o", "-v", "-R", "-z", "-n",
+]);
+
+/** Two-operand conditional operators. `<` and `>` arrive as operator tokens. */
+const TEST_BINARY_OPS = new Set([
+  "=", "==", "!=", "=~",
+  "-eq", "-ne", "-lt", "-le", "-gt", "-ge",
+  "-ef", "-nt", "-ot",
+]);
 
 const ANSI_C_ESCAPES: Record<string, string> = {
   a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f",
@@ -376,7 +389,7 @@ export class Parser {
       return true;
     }
     // A closing `}` mid-line tokenizes as an Operator, but still ends the list
-    return this.atAny(TokenType.Operator, ")", ";;", "}");
+    return this.atAny(TokenType.Operator, ")", ";;", ";&", ";;&", "}");
   }
 
   // ── List: pipeline (&&/|| pipeline)* ───────────────────────────
@@ -925,9 +938,9 @@ export class Parser {
     const commands = this.parseCompoundList();
     const body = this.wrapScript(commands);
 
-    // Consume ;;
-    if (this.atAny(TokenType.Operator, ";;")) {
-      this.advance();
+    let terminator: ";;" | ";&" | ";;&" | null = null;
+    if (this.atAny(TokenType.Operator, ";;", ";&", ";;&")) {
+      terminator = this.advance().value as ";;" | ";&" | ";;&";
     }
 
     const end = this.lastEnd(start);
@@ -936,6 +949,7 @@ export class Parser {
       type: "CaseItem",
       patterns,
       body,
+      terminator,
       range: { start, end },
     };
   }
@@ -970,31 +984,92 @@ export class Parser {
     };
   }
 
-  private parseDoubleSquareBracket(): SimpleCommand {
-    // Treat [[ ... ]] as a simple command for now
-    const start = this.peek().range.start;
-    const name = this.tokenToCompoundWord(this.advance()); // [[
-    const args: CompoundWord[] = [];
+  private parseDoubleSquareBracket(): TestCommand {
+    const start = this.expectWord("[[").range.start;
+    const expression = this.atWord("]]") || this.at(TokenType.EOF) ? null : this.parseTestOr();
 
-    while (!this.atWord("]]")) {
-      if (this.at(TokenType.EOF)) break;
-      args.push(this.tokenToCompoundWord(this.advance()));
-    }
-
-    if (this.atWord("]]")) {
-      args.push(this.tokenToCompoundWord(this.advance()));
-    }
-
+    if (this.atWord("]]")) this.advance();
     const redirects = this.parseTrailingRedirects();
 
     return {
-      type: "SimpleCommand",
-      assignments: [],
-      name,
-      args,
+      type: "TestCommand",
+      expression,
       redirects,
       range: { start, end: this.lastEnd(start) },
     };
+  }
+
+  // ── Test expressions: || binds loosest, then &&, then ! ────────
+
+  private parseTestOr(): TestExpr {
+    let left = this.parseTestAnd();
+
+    while (this.atAny(TokenType.Operator, "||")) {
+      this.advance();
+      this.skipNewlines();
+      const right = this.parseTestAnd();
+      left = { type: "TestLogical", op: "||", left, right, range: { start: left.range.start, end: right.range.end } };
+    }
+
+    return left;
+  }
+
+  private parseTestAnd(): TestExpr {
+    let left = this.parseTestNegation();
+
+    while (this.atAny(TokenType.Operator, "&&")) {
+      this.advance();
+      this.skipNewlines();
+      const right = this.parseTestNegation();
+      left = { type: "TestLogical", op: "&&", left, right, range: { start: left.range.start, end: right.range.end } };
+    }
+
+    return left;
+  }
+
+  private parseTestNegation(): TestExpr {
+    if (!this.atWord("!")) return this.parseTestPrimary();
+
+    const start = this.advance().range.start;
+    const operand = this.parseTestNegation();
+    return { type: "TestNegation", operand, range: { start, end: operand.range.end } };
+  }
+
+  private parseTestPrimary(): TestExpr {
+    if (this.atAny(TokenType.Operator, "(")) {
+      this.advance();
+      const inner = this.parseTestOr();
+      if (this.atAny(TokenType.Operator, ")")) this.advance();
+      return inner;
+    }
+
+    const tok = this.advance();
+    const word = this.tokenToCompoundWord(tok);
+
+    // `-f file` — a unary operator only when an operand actually follows
+    if (TEST_UNARY_OPS.has(tok.value) && this.startsTestOperand()) {
+      const operand = this.tokenToCompoundWord(this.advance());
+      return { type: "TestUnary", op: tok.value, operand, range: { start: tok.range.start, end: operand.range.end } };
+    }
+
+    const opTok = this.peek();
+    const isBinary = (opTok.type === TokenType.Word && TEST_BINARY_OPS.has(opTok.value)) ||
+      (opTok.type === TokenType.Operator && (opTok.value === "<" || opTok.value === ">"));
+
+    if (isBinary) {
+      this.advance();
+      const right = this.tokenToCompoundWord(this.advance());
+      return { type: "TestBinary", op: opTok.value, left: word, right, range: { start: tok.range.start, end: right.range.end } };
+    }
+
+    return { type: "TestValue", word, range: tok.range };
+  }
+
+  /** Whether the next token is a word an operator could act on */
+  private startsTestOperand(): boolean {
+    const tok = this.peek();
+    if (tok.type !== TokenType.Word) return false;
+    return !TEST_BINARY_OPS.has(tok.value);
   }
 
   // ── Functions ──────────────────────────────────────────────────

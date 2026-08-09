@@ -157,12 +157,13 @@ esac`);
     expect(cmd.redirects[0].op).toBe("<<");
   });
 
-  test("double brackets parsed as simple command", () => {
+  test("double brackets parsed as a test command", () => {
     const script = parseShell('[[ "$x" == y ]]');
     const pipeline = script.commands[0]! as any;
     const cmd = pipeline.commands[0];
-    expect(cmd.type).toBe("SimpleCommand");
-    expect(cmd.name.parts[0].value).toBe("[[");
+    expect(cmd.type).toBe("TestCommand");
+    expect(cmd.expression.type).toBe("TestBinary");
+    expect(cmd.expression.op).toBe("==");
   });
 
   test("variable expansion in compound word", () => {
@@ -792,9 +793,10 @@ describe("glob patterns", () => {
   });
 
   test("[[ is not a bracket expression", () => {
-    const name = (parseShell("[[ -f x ]]").commands[0] as any).commands[0].name;
-    expect(name.parts[0].type).toBe("Word");
-    expect(name.parts[0].value).toBe("[[");
+    // `[[` opens a test command rather than an unclosed bracket glob, and
+    // quoted it is a plain literal
+    expect((parseShell("[[ -f x ]]").commands[0] as any).commands[0].type).toBe("TestCommand");
+    expect(shape('echo "[["')).toEqual(["Word:[["]);
   });
 });
 
@@ -1170,6 +1172,112 @@ describe("let", () => {
       expect(first("let() { :; }").type).toBe("FunctionDef");
       expect(first("function let { :; }").type).toBe("FunctionDef");
     });
+  });
+});
+
+describe("test expressions", () => {
+  const command = (src: string) => (parseShell(src).commands[0] as any).commands[0];
+  const text = (word: any) => word.parts.map((p: any) => p.value ?? p.expression ?? p.type).join("");
+
+  /** Fully-parenthesised rendering, so grouping and precedence are visible */
+  const show = (n: any): string => {
+    switch (n?.type) {
+      case "TestUnary": return `(${n.op} ${text(n.operand)})`;
+      case "TestBinary": return `(${text(n.left)} ${n.op} ${text(n.right)})`;
+      case "TestLogical": return `(${show(n.left)} ${n.op} ${show(n.right)})`;
+      case "TestNegation": return `(! ${show(n.operand)})`;
+      case "TestValue": return text(n.word);
+      default: return "null";
+    }
+  };
+  const expr = (src: string) => show(command(src).expression);
+
+  test("[[ … ]] is a TestCommand, not a simple command", () => {
+    expect(command("[[ -f x ]]").type).toBe("TestCommand");
+  });
+
+  test("unary operators take their operand", () => {
+    expect(expr("[[ -f x ]]")).toBe("(-f x)");
+    expect(expr("[[ -z $s ]]")).toBe("(-z s)");
+  });
+
+  test("binary operators", () => {
+    expect(expr("[[ $x == y ]]")).toBe("(x == y)");
+    expect(expr("[[ $n -lt 3 ]]")).toBe("(n -lt 3)");
+    expect(expr("[[ $s =~ ^a.*b$ ]]")).toBe("(s =~ ^a.*b$)");
+  });
+
+  test("< and > compare strings rather than redirecting", () => {
+    expect(expr("[[ a < b ]]")).toBe("(a < b)");
+    expect(expr("[[ a > b ]]")).toBe("(a > b)");
+    expect(command("[[ a < b ]]").redirects).toEqual([]);
+  });
+
+  test("&& binds tighter than ||", () => {
+    expect(expr("[[ -f a || -f b && -x c ]]")).toBe("((-f a) || ((-f b) && (-x c)))");
+  });
+
+  test("parentheses group", () => {
+    expect(expr("[[ ( -f a || -f b ) && -x c ]]")).toBe("(((-f a) || (-f b)) && (-x c))");
+  });
+
+  test("negation", () => {
+    expect(expr("[[ ! -f x ]]")).toBe("(! (-f x))");
+    expect(expr("[[ ! -f a && ! -d b ]]")).toBe("((! (-f a)) && (! (-d b)))");
+  });
+
+  test("a bare word is tested for being non-empty", () => {
+    expect(expr("[[ $x ]]")).toBe("x");
+  });
+
+  test("an empty test has no expression", () => {
+    expect(command("[[ ]]").expression).toBeNull();
+  });
+
+  test("trailing redirects still belong to the command", () => {
+    const cmd = command("[[ -f x ]] > out.txt");
+    expect(cmd.redirects.length).toBe(1);
+    expect(cmd.redirects[0].op).toBe(">");
+  });
+
+  test("redirection still works after the test ends", () => {
+    const words = tokenize("[[ a < b ]]; cat <f").filter(t => t.type !== TokenType.EOF);
+    expect(words.filter(t => t.type === TokenType.Redirect).map(t => t.value)).toEqual(["<"]);
+  });
+
+  test("a glob in a pattern operand survives", () => {
+    const right = command('[[ "$NAME" == w* ]]').expression.right;
+    expect(right.parts.map((p: any) => p.type)).toEqual(["Word", "GlobPattern"]);
+  });
+
+  test("malformed tests do not hang", () => {
+    for (const src of ["[[", "[[ -f ]]", "[[ && ]]", "[[ ( ]]", "[[ a ==", "[[ ! ]]"]) {
+      expect(() => parseShell(src)).not.toThrow();
+    }
+  });
+});
+
+describe("case terminators", () => {
+  const items = (src: string) => (parseShell(src).commands[0] as any).commands[0].items;
+
+  test(";; ends the case", () => {
+    expect(items("case x in a) :;; esac").map((i: any) => i.terminator)).toEqual([";;"]);
+  });
+
+  test(";& falls through to the next body", () => {
+    const parsed = items("case x in a) :;& b) :;; esac");
+    expect(parsed.length).toBe(2);
+    expect(parsed.map((i: any) => i.terminator)).toEqual([";&", ";;"]);
+  });
+
+  test(";;& goes on testing later patterns", () => {
+    const parsed = items("case x in a) :;;& b) :;; esac");
+    expect(parsed.length).toBe(2);
+    expect(parsed.map((i: any) => i.terminator)).toEqual([";;&", ";;"]);
+  });
+
+  test("a final item may omit its terminator", () => {
+    expect(items("case x in a) :; esac").map((i: any) => i.terminator)).toEqual([null]);
   });
 });
 

@@ -261,6 +261,8 @@ export class Tokenizer {
   private _atCommandStart: boolean = true;
   /** Whether we are inside a `declare`-style command, where args may be assignments */
   private inDeclarationCommand: boolean = false;
+  /** Whether we are between `[[` and `]]`, where `<` and `>` compare strings */
+  private inTestCommand: boolean = false;
 
   /** Whether the last non-whitespace token allows a keyword next */
   private get atCommandStart(): boolean {
@@ -302,6 +304,13 @@ export class Tokenizer {
       }
 
       if (ch === "<" || ch === ">") {
+        // Inside `[[ … ]]` these compare strings; only process substitution
+        // still takes a paren group there
+        if (this.inTestCommand && this.src[this.pos + 1] !== "(") {
+          this.tokens.push({ type: TokenType.Operator, value: ch, range: { start: this.pos, end: this.pos + 1 } });
+          this.pos++;
+          continue;
+        }
         this.readRedirectOrProcessSub();
         continue;
       }
@@ -411,7 +420,13 @@ export class Tokenizer {
       const next = this.src[this.pos]!;
       if (ch === "|" && next === "|") { value = "||"; this.pos++; }
       else if (ch === "&" && next === "&") { value = "&&"; this.pos++; }
-      else if (ch === ";" && next === ";") { value = ";;"; this.pos++; }
+      else if (ch === ";" && next === ";") {
+        value = ";;";
+        this.pos++;
+        // `;;&` keeps testing later patterns; `;&` falls through to the next body
+        if (this.src[this.pos] === "&") { value = ";;&"; this.pos++; }
+      }
+      else if (ch === ";" && next === "&") { value = ";&"; this.pos++; }
     }
 
     this.tokens.push({
@@ -669,6 +684,7 @@ export class Tokenizer {
         range: { start, end: this.pos },
       });
       this.atCommandStart = value === "[[";
+      this.inTestCommand = value === "[[";
       return;
     }
 

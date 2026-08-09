@@ -101,8 +101,13 @@ parseShell("echo $((1+2*3))");   // ArithmeticBinary + { left: 1, right: (2 * 3)
 Simple commands, pipelines (`|`, `!`), lists (`&&`, `||`, `;`), background (`&`),
 redirections (`>`, `>>`, `<`, `>&`, `<&`, `>|`, `<>`, `<<<`) and heredocs
 (`<<`, `<<-`, quoted delimiters, several per command), `if`/`elif`/`else`,
-`for` (both word-list and C-style), `while`, `until`, `case`, `(( … ))`,
-subshells, brace groups, functions (both forms), `coproc`, `[[ … ]]`, comments.
+`for` (both word-list and C-style), `while`, `until`, `case` (including the
+`;&` and `;;&` fallthrough terminators), `(( … ))`, subshells, brace groups,
+functions (both forms), `coproc`, comments.
+
+`[[ … ]]` becomes a test expression tree — unary and binary operators, `&&`,
+`||`, `!` and grouping — with `<` and `>` treated as string comparisons rather
+than redirections.
 
 Words resolve into parts: literals, variable expansions (`$x`, `${x:-d}`),
 command substitutions (`$( )` and backticks), arithmetic (`$(( ))`), process
@@ -122,8 +127,9 @@ Assignments cover scalars, arrays (`X=(a b)`), appends (`X+=y`), subscripts
   the pattern text, so the alternatives of `@(a|b)` and the members of `[abc]`
   are not separate nodes — and an expansion inside one, as in `@($x|b)`, is
   part of that text rather than a `VariableExpansion`.
-- **`case` patterns and `[[ … ]]` contents** are kept as words rather than
-  being modelled as test expressions.
+- **`[ … ]` is not modelled as a test.** Only the `[[ … ]]` keyword form gets an
+  expression tree; `[ -f x ]` is a `SimpleCommand` named `[`, because that is
+  what it is — an ordinary command.
 - **Builtin shadowing is not tracked.** `declare`, `export`, `local`,
   `readonly`, `typeset` and `let` are recognised by name, so a user-defined
   function of the same name would change what they mean at runtime.

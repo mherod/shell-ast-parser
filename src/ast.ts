@@ -286,6 +286,56 @@ export interface ForClause {
   range: Range;
 }
 
+// ── Test expressions ───────────────────────────────────────────────
+
+/** `-f file`, `-z "$x"` — a single-operand test */
+export interface TestUnary {
+  type: "TestUnary";
+  op: string;
+  operand: CompoundWord;
+  range: Range;
+}
+
+/** `$a == b`, `$n -lt 3`, `$s =~ re` — `op` is kept verbatim */
+export interface TestBinary {
+  type: "TestBinary";
+  op: string;
+  left: CompoundWord;
+  right: CompoundWord;
+  range: Range;
+}
+
+export interface TestLogical {
+  type: "TestLogical";
+  op: "&&" | "||";
+  left: TestExpr;
+  right: TestExpr;
+  range: Range;
+}
+
+export interface TestNegation {
+  type: "TestNegation";
+  operand: TestExpr;
+  range: Range;
+}
+
+/** A bare word tested for being non-empty, as in `[[ $x ]]` */
+export interface TestValue {
+  type: "TestValue";
+  word: CompoundWord;
+  range: Range;
+}
+
+export type TestExpr = TestUnary | TestBinary | TestLogical | TestNegation | TestValue;
+
+/** `[[ … ]]` — null expression for the empty `[[ ]]` */
+export interface TestCommand {
+  type: "TestCommand";
+  expression: TestExpr | null;
+  redirects: Redirect[];
+  range: Range;
+}
+
 /** One argument of `let`, which the shell evaluates as arithmetic */
 export interface LetExpression {
   /** the argument with any wrapping quotes removed */
@@ -347,6 +397,11 @@ export interface CaseItem {
   type: "CaseItem";
   patterns: CompoundWord[];
   body: Script;
+  /**
+   * `;;` ends the case, `;&` falls through to the next body, and `;;&` goes on
+   * testing later patterns. Null when the last item omits it before `esac`.
+   */
+  terminator: ";;" | ";&" | ";;&" | null;
   range: Range;
 }
 
@@ -390,6 +445,7 @@ export type CompoundCommand =
 export type Command =
   | SimpleCommand
   | LetCommand
+  | TestCommand
   | Pipeline
   | List
   | CompoundCommand
