@@ -9,10 +9,10 @@ forever in `parseCompoundList`. That was not in the original report, which
 concluded the parser was "fundamentally sound".
 
 Findings 1–5 are defects the parser had, 6–10 are constructs it silently dropped
-on the floor, and 11–12 are places where the AST asserted things about the
+on the floor, and 11–13 are places where the AST asserted things about the
 source that were not true.
 
-Status: all findings below are fixed. `bun test` → 122 pass / 0 fail. `tsc --noEmit` → clean.
+Status: all findings below are fixed. `bun test` → 132 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -197,6 +197,39 @@ token range even when parsing an assignment's *value*, which starts after the
 `=`. Substitution bodies inside `TODAY=$(date +%F)` were offset by the width of
 `TODAY=`. The base offset is now passed explicitly.
 
+### 13. Delimiter scanning ignored quotes, cutting tokens short — HIGH
+**Files:** `src/tokenizer.ts` (`readDollar`, `readParenGroup`, `readWord`),
+`src/parser.ts` (`parseWordParts`)
+
+Finding 11 fixed *what counts as an expansion*; this is *where an expansion
+ends*. Every delimiter scanner counted brackets without regard for quotes, so a
+delimiter inside a string closed the region early:
+
+```
+echo $(grep ")" f)     → substitution ended at the quoted ), leaving `" f)` as words
+echo ${x:-"}"}         → expansion ended at the quoted }
+diff <(grep ")" a)     → same, for process substitution
+```
+
+Both layers had it: the tokenizer decided the token boundary, and
+`parseWordParts` re-scanned the same text with the same flaw, so fixing one
+without the other would have changed nothing observable.
+
+Nesting inside double quotes was broken separately: `readWord` scanned a
+double-quoted span character by character, so `"$(grep ")" f)"` ended at the
+quote *inside* the substitution.
+
+**Fix:** a shared quote-aware scanner in each layer — `readBalanced` in the
+tokenizer, `readDelimited` in the parser — that skips quoted spans whole and
+honours backslash escapes. `readWord` now hands `$(`, `${` and backticks inside
+a double-quoted span to the readers that understand nesting.
+
+This also fixed a bug in `$(( … ))`, which paired the literal strings `((` and
+`))`: `$((a+(b*c)))` stopped at the first `))`, capturing `a+(b*c` and spilling
+a stray `)` into the token stream as an operator. Counting single parens from a
+starting depth of 2 handles it, and the arithmetic text now comes out as
+`a+(b*c)`.
+
 ---
 
 ## Original findings that did not hold
@@ -219,11 +252,14 @@ for code that lives in `parser.ts`.
 
 ## Known gaps
 
-- **The tokenizer is still quote-blind when finding token boundaries.** Finding
-  11 fixed the parser's scanner, but `readDollar` counts parens without tracking
-  quotes, so `$(grep ")" file)` ends the substitution at the quoted `)`. The
-  same applies to `${…}` containing a `}`. Fixing it means teaching
-  `readDollar`/`readParenGroup` the same quote states the parser now knows.
+- **Comments and heredocs inside `$( … )`.** The scanners understand quotes and
+  escapes, not `#` comments, so `$(echo hi # )` still ends at the `)` in the
+  comment. A heredoc opened inside a substitution is not tracked either. Both
+  need the substitution body tokenized as it is scanned rather than captured
+  first and parsed after.
+- **`#` mid-word starts a comment.** `echo a#b` splits at the `#`, because
+  `isWordChar` excludes it unconditionally. It is only a comment at the start of
+  a word.
 - **Arrays in argument position.** `declare -a X=(1 2)` still splits into a
   command plus a subshell — only *leading* assignments are parsed as arrays.
   Handling it means special-casing the declaration builtins (`declare`, `local`,
@@ -238,7 +274,7 @@ for code that lives in `parser.ts`.
 
 ## Regression coverage added
 
-`src/parser.test.ts`, 122 tests total: heredoc content attachment, two-heredoc
+`src/parser.test.ts`, 132 tests total: heredoc content attachment, two-heredoc
 ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
 `[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
 detached-paren disambiguation, unterminated), background on pipelines and lists
@@ -248,5 +284,8 @@ including adjacent literals and nesting inside `$()`, `+=` on scalars and arrays
 with the non-assignment forms held to `Word`, quoting (expansion suppression in
 single quotes, `<(` suppression in double quotes, per-segment quote context,
 escapes, `$'…'` and `$"…"`, empty quoted words, unterminated quotes, per-part
-and assignment-value ranges), and a `termination` block asserting that eight
-previously-hanging inputs return.
+and assignment-value ranges), delimiters inside quotes (quoted `)` and `}` in
+substitutions, expansions and process substitutions, nesting inside double
+quotes, escaped delimiters, arithmetic with nested parens, unterminated
+regions), and a `termination` block asserting that eight previously-hanging
+inputs return.

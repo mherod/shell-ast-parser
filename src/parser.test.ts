@@ -593,6 +593,59 @@ describe("quoting", () => {
   });
 });
 
+describe("delimiters inside quotes", () => {
+  const words = (src: string) => tokenize(src).filter(t => t.type !== TokenType.EOF).map(t => t.value);
+  const parts = (src: string) => (parseShell(src).commands[0] as any).commands[0].args[0].parts;
+
+  test("a quoted ) does not end a command substitution", () => {
+    expect(words('echo $(grep ")" f)')).toEqual(["echo", '$(grep ")" f)']);
+    const inner = parts('echo $(grep ")" f)')[0].body.commands[0].commands[0];
+    expect(inner.args.map((a: any) => a.parts[0].value)).toEqual([")", "f"]);
+  });
+
+  test("a single-quoted ) does not end a command substitution", () => {
+    expect(words("echo $(grep ')' f)")).toEqual(["echo", "$(grep ')' f)"]);
+  });
+
+  test("a quoted } does not end a parameter expansion", () => {
+    expect(parts('echo ${x:-"}"}')[0].expression).toBe('x:-"}"');
+  });
+
+  test("a substitution inside double quotes keeps its own quotes", () => {
+    expect(words('echo "$(grep ")" f)"')).toEqual(["echo", '"$(grep ")" f)"']);
+    expect(parts('echo "$(grep ")" f)"')[0].type).toBe("CommandSubstitution");
+  });
+
+  test("a backtick substitution inside double quotes", () => {
+    expect(words('echo "`grep ")" f`"')).toEqual(["echo", '"`grep ")" f`"']);
+  });
+
+  test("an escaped ) does not end a command substitution", () => {
+    expect(words("echo $(echo \\) done)")).toEqual(["echo", "$(echo \\) done)"]);
+  });
+
+  test("a quoted ) does not end a process substitution", () => {
+    expect(words('diff <(grep ")" a) b')).toEqual(["diff", '<(grep ")" a)', "b"]);
+  });
+
+  test("arithmetic keeps nested parens and consumes both closers", () => {
+    expect(words("echo $((a+(b*c)))")).toEqual(["echo", "$((a+(b*c)))"]);
+    const part = parts("echo $((a+(b*c)))")[0];
+    expect(part.type).toBe("ArithmeticExpansion");
+    expect(part.expression).toBe("a+(b*c)");
+  });
+
+  test("a substitution nested in arithmetic", () => {
+    expect(parts("echo $(($(echo 1)+2))")[0].expression).toBe("$(echo 1)+2");
+  });
+
+  test("unterminated regions do not hang", () => {
+    for (const src of ["echo $(", "echo ${", "echo $((", 'echo "$(', "echo $(a\\"]) {
+      expect(() => parseShell(src)).not.toThrow();
+    }
+  });
+});
+
 describe("fixture: sample.sh", () => {
   test("parses the full fixture without throwing", async () => {
     const src = await Bun.file("fixtures/sample.sh").text();

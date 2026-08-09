@@ -57,23 +57,57 @@ function readAnsiCString(raw: string, start: number): { value: string; next: num
   return { value, next: i };
 }
 
-/**
- * Read a parenthesised body, starting at the index of the opening paren.
- * Returns the text between the parens and the index just past the closing one.
- */
-function readParenBody(raw: string, openParen: number): { body: string; next: number } {
-  let i = openParen + 1;
-  let body = "";
-  let depth = 1;
+/** Skip a quoted span starting at the opening quote; returns the index past it */
+function skipQuoted(raw: string, start: number): number {
+  const quote = raw[start]!;
+  let i = start + 1;
 
-  while (i < raw.length && depth > 0) {
-    if (raw[i] === "(") depth++;
-    else if (raw[i] === ")") depth--;
-    if (depth > 0) { body += raw[i]; i++; }
+  while (i < raw.length && raw[i] !== quote) {
+    // Backslash escapes exist inside double quotes only
+    if (quote === '"' && raw[i] === "\\") i += 2;
+    else i++;
   }
-  if (i < raw.length) i++; // skip )
 
-  return { body, next: i };
+  return i < raw.length ? i + 1 : i;
+}
+
+/**
+ * Read a delimited region, starting at the index of its opener. Quoted spans
+ * are skipped whole, so a delimiter inside a string does not close the region:
+ * `$(grep ")" file)` runs to the last paren, not the quoted one.
+ *
+ * `depth` above 1 is for openers spelled with repeated delimiters, like `$((`.
+ * The extra closers land at the end of the body, so they are trimmed off.
+ */
+function readDelimited(raw: string, open: number, openCh: string, closeCh: string, depth: number = 1): { body: string; next: number } {
+  const extraClosers = depth - 1;
+  const start = open + 1;
+  let i = start;
+
+  while (i < raw.length) {
+    const ch = raw[i]!;
+
+    if (ch === "\\") { i += 2; continue; }
+    if (ch === "'" || ch === '"') { i = skipQuoted(raw, i); continue; }
+
+    if (ch === openCh) depth++;
+    else if (ch === closeCh) {
+      depth--;
+      if (depth === 0) break;
+    }
+    i++;
+  }
+
+  let body = raw.slice(start, i);
+  for (let n = 0; n < extraClosers && body.endsWith(closeCh); n++) {
+    body = body.slice(0, -1);
+  }
+
+  return { body, next: i < raw.length ? i + 1 : i };
+}
+
+function readParenBody(raw: string, openParen: number): { body: string; next: number } {
+  return readDelimited(raw, openParen, "(", ")");
 }
 
 /**
@@ -981,15 +1015,8 @@ export class Parser {
 
         if (next === "{") {
           // ${...}
-          i += 2;
-          let expr = "";
-          let depth = 1;
-          while (i < raw.length && depth > 0) {
-            if (raw[i] === "{") depth++;
-            else if (raw[i] === "}") depth--;
-            if (depth > 0) { expr += raw[i]; i++; }
-          }
-          if (i < raw.length) i++; // skip }
+          const { body: expr, next: after } = readDelimited(raw, i + 1, "{", "}");
+          i = after;
           parts.push({
             type: "VariableExpansion",
             expression: expr,
@@ -1000,13 +1027,8 @@ export class Parser {
         } else if (next === "(") {
           if (i + 2 < raw.length && raw[i + 2] === "(") {
             // $(( arithmetic ))
-            i += 3;
-            let expr = "";
-            while (i + 1 < raw.length && !(raw[i] === ")" && raw[i + 1] === ")")) {
-              expr += raw[i];
-              i++;
-            }
-            if (i + 1 < raw.length) i += 2; // skip ))
+            const { body: expr, next: after } = readDelimited(raw, i + 2, "(", ")", 2);
+            i = after;
             parts.push({
               type: "ArithmeticExpansion",
               expression: expr,

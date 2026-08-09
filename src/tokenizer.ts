@@ -367,15 +367,22 @@ export class Tokenizer {
         value += ch;
         this.pos++;
         while (this.pos < this.src.length && this.src[this.pos] !== '"') {
-          if (this.src[this.pos] === "\\") {
-            value += this.src[this.pos];
+          const c = this.src[this.pos]!;
+          if (c === "\\") {
+            value += c;
             this.pos++;
             if (this.pos < this.src.length) {
               value += this.src[this.pos];
               this.pos++;
             }
+          } else if (c === "$" && (this.src[this.pos + 1] === "(" || this.src[this.pos + 1] === "{")) {
+            // A substitution nests its own quotes: "$(grep ")" f)" does not end
+            // at the quote inside the substitution
+            value += this.readDollar();
+          } else if (c === "`") {
+            value += this.readBacktick();
           } else {
-            value += this.src[this.pos];
+            value += c;
             this.pos++;
           }
         }
@@ -462,6 +469,54 @@ export class Tokenizer {
     this.atCommandStart = false;
   }
 
+  /** Skip a quoted span. `this.pos` must be on the opening quote. */
+  private skipQuoted(quote: string): void {
+    this.pos++;
+    while (this.pos < this.src.length && this.src[this.pos] !== quote) {
+      // Backslash escapes exist inside double quotes only
+      if (quote === '"' && this.src[this.pos] === "\\") this.pos += 2;
+      else this.pos++;
+    }
+    if (this.pos < this.src.length) this.pos++;
+  }
+
+  /**
+   * Read a delimited region, with `this.pos` just past its opener. Quoted
+   * spans are skipped whole, so a delimiter inside a string does not close the
+   * region: `$(grep ")" file)` runs to the last paren, not the quoted one.
+   *
+   * `depth` above 1 is for openers spelled with repeated delimiters, like
+   * `$((`. The extra closers land at the end of the collected text, so they
+   * are trimmed back off.
+   */
+  private readBalanced(open: string, close: string, depth: number = 1): { text: string; closed: boolean } {
+    const extraClosers = depth - 1;
+    const start = this.pos;
+    let closed = false;
+
+    while (this.pos < this.src.length) {
+      const ch = this.src[this.pos]!;
+
+      if (ch === "\\") { this.pos += 2; continue; }
+      if (ch === "'" || ch === '"') { this.skipQuoted(ch); continue; }
+
+      if (ch === open) { depth++; }
+      else if (ch === close) {
+        depth--;
+        if (depth === 0) { closed = true; break; }
+      }
+      this.pos++;
+    }
+
+    let text = this.src.slice(start, this.pos);
+    if (closed) this.pos++;
+    for (let n = 0; n < extraClosers && text.endsWith(close); n++) {
+      text = text.slice(0, -close.length);
+    }
+
+    return { text, closed };
+  }
+
   /** Read a $... expansion and return the raw text */
   private readDollar(): string {
     let result = "$";
@@ -475,57 +530,19 @@ export class Tokenizer {
       this.pos++;
       if (this.pos < this.src.length && this.src[this.pos] === "(") {
         // $(( arithmetic ))
-        result += "((";
         this.pos++;
-        let depth = 1;
-        while (this.pos < this.src.length && depth > 0) {
-          if (this.src[this.pos] === "(" && this.pos + 1 < this.src.length && this.src[this.pos + 1] === "(") {
-            depth++;
-            result += "((";
-            this.pos += 2;
-          } else if (this.src[this.pos] === ")" && this.pos + 1 < this.src.length && this.src[this.pos + 1] === ")") {
-            depth--;
-            result += "))";
-            this.pos += 2;
-          } else {
-            result += this.src[this.pos];
-            this.pos++;
-          }
-        }
+        const { text, closed } = this.readBalanced("(", ")", 2);
+        result += "((" + text + (closed ? "))" : "");
       } else {
         // $( command substitution )
-        result += "(";
-        let depth = 1;
-        while (this.pos < this.src.length && depth > 0) {
-          if (this.src[this.pos] === "(") depth++;
-          else if (this.src[this.pos] === ")") depth--;
-          if (depth > 0) {
-            result += this.src[this.pos];
-            this.pos++;
-          }
-        }
-        if (this.pos < this.src.length) {
-          result += ")";
-          this.pos++;
-        }
+        const { text, closed } = this.readBalanced("(", ")");
+        result += "(" + text + (closed ? ")" : "");
       }
     } else if (ch === "{") {
       // ${...} parameter expansion
-      result += "{";
       this.pos++;
-      let depth = 1;
-      while (this.pos < this.src.length && depth > 0) {
-        if (this.src[this.pos] === "{") depth++;
-        else if (this.src[this.pos] === "}") depth--;
-        if (depth > 0) {
-          result += this.src[this.pos];
-          this.pos++;
-        }
-      }
-      if (this.pos < this.src.length) {
-        result += "}";
-        this.pos++;
-      }
+      const { text, closed } = this.readBalanced("{", "}");
+      result += "{" + text + (closed ? "}" : "");
     } else if (ch === "!" || ch === "?" || ch === "#" || ch === "$" || ch === "@" || ch === "*" || ch === "-" || ch === "0") {
       // Special parameters
       result += ch;
@@ -571,23 +588,9 @@ export class Tokenizer {
 
   /** Read a parenthesized group: ( ... ) tracking nesting */
   private readParenGroup(): string {
-    let result = "(";
     this.pos++; // skip (
-    let depth = 1;
-    while (this.pos < this.src.length && depth > 0) {
-      const c = this.src[this.pos]!;
-      if (c === "(") depth++;
-      else if (c === ")") depth--;
-      if (depth > 0) {
-        result += c;
-        this.pos++;
-      }
-    }
-    if (this.pos < this.src.length) {
-      result += ")";
-      this.pos++;
-    }
-    return result;
+    const { text, closed } = this.readBalanced("(", ")");
+    return "(" + text + (closed ? ")" : "");
   }
 }
 
