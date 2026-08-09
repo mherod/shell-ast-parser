@@ -646,6 +646,158 @@ describe("delimiters inside quotes", () => {
   });
 });
 
+describe("comments", () => {
+  const words = (src: string) => tokenize(src).filter(t => t.type !== TokenType.EOF).map(t => t.value);
+
+  test("# mid-word is an ordinary character", () => {
+    expect(words("echo a#b")).toEqual(["echo", "a#b"]);
+  });
+
+  test("# at word start still opens a comment", () => {
+    expect(tokenize("echo a #b").filter(t => t.type === TokenType.Comment).map(t => t.value)).toEqual(["#b"]);
+  });
+
+  test("a fragment URL survives as one assignment", () => {
+    const toks = tokenize("url=http://x#frag").filter(t => t.type !== TokenType.EOF);
+    expect(toks[0]!.type).toBe(TokenType.Assignment);
+    expect(toks[0]!.value).toBe("url=http://x#frag");
+  });
+
+  test("a comment inside $( ) does not end the substitution", () => {
+    expect(words("echo $(echo hi # )")).toEqual(["echo", "$(echo hi # )"]);
+  });
+
+  test("a comment inside <( ) does not end it either", () => {
+    expect(words("diff <(ls # )")).toEqual(["diff", "<(ls # )"]);
+  });
+
+  test("# stays an operator inside ${ }", () => {
+    const part = (src: string) => (parseShell(src).commands[0] as any).commands[0].args[0].parts[0];
+    expect(part("echo ${#NAME}").expression).toBe("#NAME");
+    expect(part("echo ${NAME#pre}").expression).toBe("NAME#pre");
+    expect(part("echo ${NAME##pre}").expression).toBe("NAME##pre");
+  });
+
+  test("a quoted # inside a substitution is not a comment", () => {
+    expect(words("echo $(echo '#')")).toEqual(["echo", "$(echo '#')"]);
+  });
+});
+
+describe("subscripted assignment", () => {
+  const assignment = (src: string) => (parseShell(src).commands[0] as any).commands[0].assignments[0];
+
+  test("subscript is captured and the name is bare", () => {
+    const a = assignment("ITEMS[0]=x");
+    expect(a.name).toBe("ITEMS");
+    expect(a.subscript.parts[0].value).toBe("0");
+  });
+
+  test("a subscript may expand", () => {
+    const src = "ITEMS[$i]=x";
+    const a = assignment(src);
+    expect(a.subscript.parts[0].type).toBe("VariableExpansion");
+    expect(src.slice(a.subscript.range.start, a.subscript.range.end)).toBe("$i");
+  });
+
+  test("subscript combines with +=", () => {
+    const a = assignment("ITEMS[0]+=x");
+    expect(a.append).toBe(true);
+    expect(a.subscript.parts[0].value).toBe("0");
+  });
+
+  test("an unsubscripted assignment has none", () => {
+    expect(assignment("PLAIN=x").subscript).toBeNull();
+  });
+
+  test("a name that is not an identifier stays a word", () => {
+    expect(tokenize("[0]=x")[0]!.type).toBe(TokenType.Word);
+    expect(tokenize("file[0].txt=x")[0]!.type).toBe(TokenType.Word);
+  });
+});
+
+describe("declaration builtins", () => {
+  const cmd = (src: string) => (parseShell(src).commands[0] as any).commands[0];
+
+  test("declare -a X=(1 2) is one command, not a command plus a subshell", () => {
+    const script = parseShell("declare -a X=(1 2)");
+    expect(script.commands.length).toBe(1);
+    const args = cmd("declare -a X=(1 2)").args;
+    expect(args[1].type).toBe("Assignment");
+    expect(args[1].value.type).toBe("ArrayLiteral");
+    expect(args[1].value.elements.length).toBe(2);
+  });
+
+  test("two array arguments in one declaration", () => {
+    const script = parseShell("declare -a X=(1 2) Y=(3)");
+    expect(script.commands.length).toBe(1);
+    expect(cmd("declare -a X=(1 2) Y=(3)").args.filter((a: any) => a.type === "Assignment").length).toBe(2);
+  });
+
+  for (const builtin of ["export", "local", "readonly", "typeset"]) {
+    test(`${builtin} takes assignment arguments`, () => {
+      const args = cmd(`${builtin} FOO=bar`).args;
+      expect(args[0].type).toBe("Assignment");
+      expect(args[0].name).toBe("FOO");
+    });
+  }
+
+  test("an ordinary command keeps assignment-shaped args as words", () => {
+    const args = cmd("cmd FOO=bar").args;
+    expect(args[0].type).toBe("CompoundWord");
+  });
+
+  test("a prefix assignment is still a prefix, not an argument", () => {
+    const c = cmd("FOO=bar cmd");
+    expect(c.assignments.length).toBe(1);
+    expect(c.args.length).toBe(0);
+  });
+
+  test("declaration context ends with the command", () => {
+    const script = parseShell("declare -a X=(1); echo after");
+    expect(script.commands.length).toBe(2);
+    expect((script.commands[1] as any).commands[0].name.parts[0].value).toBe("echo");
+  });
+});
+
+describe("glob patterns", () => {
+  const parts = (src: string) => (parseShell(src).commands[0] as any).commands[0].args[0].parts;
+  const shape = (src: string) => parts(src).map((p: any) => `${p.type}:${p.value}`);
+
+  test("* and ? are globs when unquoted", () => {
+    expect(shape("echo *.sh")).toEqual(["GlobPattern:*", "Word:.sh"]);
+    expect(shape("echo file?.txt")).toEqual(["Word:file", "GlobPattern:?", "Word:.txt"]);
+  });
+
+  test("a glob in the middle of a path", () => {
+    expect(shape("echo /home/*/Documents")).toEqual(["Word:/home/", "GlobPattern:*", "Word:/Documents"]);
+  });
+
+  test("bracket expressions, including negation and a literal ]", () => {
+    expect(shape("echo [abc]x")).toEqual(["GlobPattern:[abc]", "Word:x"]);
+    expect(shape("echo [!abc]")).toEqual(["GlobPattern:[!abc]"]);
+    expect(shape("echo []a]")).toEqual(["GlobPattern:[]a]"]);
+  });
+
+  test("an unclosed [ is a literal", () => {
+    expect(shape("echo [abc")).toEqual(["Word:[abc"]);
+  });
+
+  test("quoting defeats globbing", () => {
+    expect(shape('echo "*.ts"')).toEqual(["Word:*.ts"]);
+    expect(shape("echo '*'")).toEqual(["Word:*"]);
+  });
+
+  test("escaping defeats globbing", () => {
+    expect(shape("echo \\*")).toEqual(["Word:*"]);
+  });
+
+  test("[[ is not a bracket expression", () => {
+    const name = (parseShell("[[ -f x ]]").commands[0] as any).commands[0].name;
+    expect(name.parts[0].type).toBe("Word");
+    expect(name.parts[0].value).toBe("[[");
+  });
+});
+
 describe("fixture: sample.sh", () => {
   test("parses the full fixture without throwing", async () => {
     const src = await Bun.file("fixtures/sample.sh").text();

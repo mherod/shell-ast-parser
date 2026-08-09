@@ -116,7 +116,10 @@ export interface ArrayLiteral {
 
 export interface Assignment {
   type: "Assignment";
+  /** the bare variable name, without any subscript */
   name: string;
+  /** the `i` of `NAME[i]=value`, which may itself expand; null when absent */
+  subscript: CompoundWord | null;
   /** `NAME+=value` appends rather than replaces */
   append: boolean;
   /** null for a bare `VAR=`; discriminate on `value.type` */
@@ -126,11 +129,16 @@ export interface Assignment {
 
 export interface SimpleCommand {
   type: "SimpleCommand";
-  /** VAR=val prefixes */
+  /** VAR=val prefixes, which apply to this command's environment */
   assignments: Assignment[];
   /** command name + arguments as compound words */
   name: CompoundWord | null;
-  args: CompoundWord[];
+  /**
+   * Arguments. An `Assignment` appears here only for declaration builtins
+   * (`declare`, `export`, …), where the assignment is the argument rather than
+   * an environment prefix — discriminate on `arg.type`.
+   */
+  args: (CompoundWord | Assignment)[];
   redirects: Redirect[];
   range: Range;
 }

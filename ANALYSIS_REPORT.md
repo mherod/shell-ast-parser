@@ -9,10 +9,10 @@ forever in `parseCompoundList`. That was not in the original report, which
 concluded the parser was "fundamentally sound".
 
 Findings 1–5 are defects the parser had, 6–10 are constructs it silently dropped
-on the floor, and 11–13 are places where the AST asserted things about the
+on the floor, and 11–18 are places where the AST asserted things about the
 source that were not true.
 
-Status: all findings below are fixed. `bun test` → 132 pass / 0 fail. `tsc --noEmit` → clean.
+Status: all findings below are fixed. `bun test` → 160 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -230,6 +230,71 @@ a stray `)` into the token stream as an operator. Counting single parens from a
 starting depth of 2 handles it, and the arithmetic text now comes out as
 `a+(b*c)`.
 
+### 14. `#` split words that contained it — MEDIUM
+**File:** `src/tokenizer.ts`, `isWordChar`
+
+`#` was excluded from word characters unconditionally, so `echo a#b` tokenized
+identically to `echo a #b` — one argument became an argument plus a comment.
+`url=http://x#frag` lost everything from the `#`.
+
+**Fix:** `#` is an ordinary word character. `tokenize` already handles a
+word-initial `#` before `readWord` is reached, which is the only place a comment
+can start.
+
+### 15. Comments were invisible to the substitution scanners — MEDIUM
+**Files:** `src/tokenizer.ts`, `src/parser.ts`
+
+Finding 13 taught the delimiter scanners about quotes; they still knew nothing
+about comments, so `$(echo hi # )` ended at the `)` inside the comment.
+
+**Fix:** a `comments` flag on both scanners, enabled for `$( )` and `<( )`,
+which hold shell code. It stays off for `${ }`, where `#` is the length and
+prefix-strip operator, and for arithmetic — `${#NAME}`, `${NAME#pre}` and
+`$((a#b))` are unchanged.
+
+### 16. Subscripted assignments were words — MEDIUM
+**Files:** `src/tokenizer.ts`, `src/parser.ts`, `src/ast.ts`
+
+`ITEMS[0]=x` failed the assignment-name pattern and fell through to `Word`.
+
+**Fix:** the pattern accepts `NAME[subscript]` with an optional trailing `+`,
+and `Assignment` carries `subscript: CompoundWord | null`. The subscript is a
+word in its own right, so `ITEMS[$i]=x` records a `VariableExpansion`.
+
+### 17. Declaration builtins produced a phantom command — HIGH
+**Files:** `src/tokenizer.ts`, `src/parser.ts`, `src/ast.ts`
+
+`declare -a X=(1 2)` parsed as a `SimpleCommand` **plus a `Subshell` running the
+command `1 2`** — one source command became two AST commands, one of which does
+not exist. Same class of error as the quote-blindness: the tree asserts a
+command that the shell never runs.
+
+The cause was in the tokenizer: assignments are only recognised at command
+start, so `X=` after `declare -a` was a plain word, leaving `(1 2)` to be read
+as a subshell.
+
+**Fix:** the tokenizer tracks a declaration context for `declare`, `typeset`,
+`local`, `export` and `readonly`, in which assignment-shaped words are
+assignments. `SimpleCommand.args` widens to `(CompoundWord | Assignment)[]`,
+discriminated on `arg.type` — for these builtins the assignment *is* the
+argument, unlike a prefix assignment such as `FOO=bar cmd`.
+
+A `(` glued to an assignment opens an array literal rather than a subshell, so
+it no longer ends the declaration context: `declare -a X=(1 2) Y=(3)` keeps
+recognising `Y`.
+
+### 18. `GlobPattern` had no producer — MEDIUM
+**File:** `src/parser.ts`, `parseWordParts`
+
+The type existed but nothing emitted it; glob characters stayed inside `Word`
+values, so nothing could tell `*.ts` from a file literally named `*.ts`.
+
+**Fix:** unquoted `*`, `?` and `[…]` bracket expressions become `GlobPattern`
+parts. This depends on finding 11 — quoting is what separates a glob from a
+literal, so `"*.ts"`, `'*'` and `\*` all stay `Word`s. Bracket expressions
+handle `!`/`^` negation and a leading `]` as a literal member; an unclosed `[`
+is a literal. `[[` is unaffected, having no closing bracket.
+
 ---
 
 ## Original findings that did not hold
@@ -252,29 +317,22 @@ for code that lives in `parser.ts`.
 
 ## Known gaps
 
-- **Comments and heredocs inside `$( … )`.** The scanners understand quotes and
-  escapes, not `#` comments, so `$(echo hi # )` still ends at the `)` in the
-  comment. A heredoc opened inside a substitution is not tracked either. Both
-  need the substitution body tokenized as it is scanned rather than captured
-  first and parsed after.
-- **`#` mid-word starts a comment.** `echo a#b` splits at the `#`, because
-  `isWordChar` excludes it unconditionally. It is only a comment at the start of
-  a word.
-- **Arrays in argument position.** `declare -a X=(1 2)` still splits into a
-  command plus a subshell — only *leading* assignments are parsed as arrays.
-  Handling it means special-casing the declaration builtins (`declare`, `local`,
-  `export`, `typeset`), which is arguably the consumer's job.
-- **Subscripted assignment.** `ITEMS[0]=x` tokenizes as a `Word`; the name
-  pattern allows no subscript.
-- **`GlobPattern` has no producer.** Like `ProcessSubstitution` before finding
-  9, the type exists but glob characters stay inside `Word` values. Now that
-  quoting is tracked, this is implementable — `*` is a glob unquoted and a
-  literal inside quotes — but it needs a decision about whether bracket
-  expressions and extglob are in scope.
+- **Heredocs opened inside `$( … )`.** The scanners handle quotes, escapes and
+  comments, but a heredoc started inside a substitution is not tracked. This one
+  needs the substitution body tokenized as it is scanned rather than captured
+  first and parsed after — the others were fixable within the scan.
+- **Extended globs.** `?(a|b)`, `*(…)`, `+(…)` are unsupported: the
+  metacharacter reads as a plain glob and the parenthesised list becomes a
+  separate subshell, so `echo ?(a|b)` yields two commands. They require
+  `shopt -s extglob` and are a syntax error in bash without it, so no correct
+  single interpretation exists — but the phantom subshell is the same shape of
+  wrongness as finding 17 and deserves a real fix if extglob matters.
+- **Arithmetic is not parsed.** `ArithmeticExpansion.expression` is raw text.
+- **`case` patterns and `[[ … ]]` contents** are words, not test expressions.
 
 ## Regression coverage added
 
-`src/parser.test.ts`, 132 tests total: heredoc content attachment, two-heredoc
+`src/parser.test.ts`, 160 tests total: heredoc content attachment, two-heredoc
 ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
 `[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
 detached-paren disambiguation, unterminated), background on pipelines and lists

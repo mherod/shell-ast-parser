@@ -33,10 +33,22 @@ const KEYWORDS = new Set([
   "!", "[[", "]]",
 ]);
 
+/**
+ * Builtins that declare variables. Their arguments are assignments rather than
+ * ordinary words, so `declare -a X=(1 2)` is one command, not a command
+ * followed by a subshell.
+ */
+const DECLARATION_BUILTINS = new Set(["declare", "typeset", "local", "export", "readonly"]);
+
 function isWhitespace(ch: string): boolean {
   return ch === " " || ch === "\t";
 }
 
+/**
+ * `#` is absent from this list on purpose: it only opens a comment at the start
+ * of a word, which `tokenize` has already handled before `readWord` runs. Mid
+ * word it is an ordinary character, so `echo a#b` is one argument.
+ */
 function isWordChar(ch: string): boolean {
   return (
     ch !== "" &&
@@ -48,9 +60,19 @@ function isWordChar(ch: string): boolean {
     ch !== "(" &&
     ch !== ")" &&
     ch !== "<" &&
-    ch !== ">" &&
-    ch !== "#"
+    ch !== ">"
   );
+}
+
+/**
+ * Whether the character at `pos` begins a word — true at the start of the
+ * region, after whitespace, or after an operator that ends the previous word.
+ * Only there does `#` open a comment.
+ */
+function startsWord(src: string, pos: number, regionStart: number): boolean {
+  if (pos === regionStart) return true;
+  const prev = src[pos - 1]!;
+  return isWhitespace(prev) || prev === "\n" || prev === ";" || prev === "&" || prev === "|" || prev === "(";
 }
 
 export interface PendingHereDoc {
@@ -64,8 +86,20 @@ export class Tokenizer {
   private pos: number = 0;
   private tokens: Token[] = [];
   private pendingHereDocs: PendingHereDoc[] = [];
+  private _atCommandStart: boolean = true;
+  /** Whether we are inside a `declare`-style command, where args may be assignments */
+  private inDeclarationCommand: boolean = false;
+
   /** Whether the last non-whitespace token allows a keyword next */
-  private atCommandStart: boolean = true;
+  private get atCommandStart(): boolean {
+    return this._atCommandStart;
+  }
+
+  /** Reaching a new command position ends any declaration context */
+  private set atCommandStart(value: boolean) {
+    this._atCommandStart = value;
+    if (value) this.inDeclarationCommand = false;
+  }
 
   constructor(src: string) {
     this.src = src;
@@ -115,6 +149,15 @@ export class Tokenizer {
       }
 
       if (ch === "(" || ch === ")") {
+        // A `(` glued to an assignment opens an array literal, not a subshell.
+        // It is inside the same command, so declaration context survives it and
+        // `declare -a X=(1 2) Y=(3)` keeps recognising Y as an assignment.
+        const prev = this.tokens[this.tokens.length - 1];
+        const opensArray = ch === "(" &&
+          prev?.type === TokenType.Assignment &&
+          prev.range.end === this.pos;
+        const declarationContext = this.inDeclarationCommand;
+
         this.tokens.push({
           type: TokenType.Operator,
           value: ch,
@@ -122,6 +165,7 @@ export class Tokenizer {
         });
         this.pos++;
         if (ch === "(") this.atCommandStart = true;
+        if (opensArray) this.inDeclarationCommand = declarationContext;
         continue;
       }
 
@@ -448,10 +492,12 @@ export class Tokenizer {
       return;
     }
 
-    // Assignment: NAME=... or NAME+=... (only when at command start position)
-    if (hasEquals && equalsPos > 0 && this.atCommandStart) {
+    // Assignment: NAME=, NAME+=, NAME[sub]=, NAME[sub]+=
+    // Valid at command start, and after a declaration builtin, where the
+    // assignment is an argument: `declare -a X=(1 2)`
+    if (hasEquals && equalsPos > 0 && (this.atCommandStart || this.inDeclarationCommand)) {
       const name = value.slice(0, equalsPos);
-      if (/^[a-zA-Z_][a-zA-Z0-9_]*\+?$/.test(name)) {
+      if (/^[a-zA-Z_][a-zA-Z0-9_]*(\[[^\]]+\])?\+?$/.test(name)) {
         this.tokens.push({
           type: TokenType.Assignment,
           value,
@@ -461,12 +507,16 @@ export class Tokenizer {
       }
     }
 
+    const wasCommandStart = this.atCommandStart;
     this.tokens.push({
       type: TokenType.Word,
       value,
       range: { start, end: this.pos },
     });
     this.atCommandStart = false;
+    if (wasCommandStart && DECLARATION_BUILTINS.has(value)) {
+      this.inDeclarationCommand = true;
+    }
   }
 
   /** Skip a quoted span. `this.pos` must be on the opening quote. */
@@ -488,8 +538,12 @@ export class Tokenizer {
    * `depth` above 1 is for openers spelled with repeated delimiters, like
    * `$((`. The extra closers land at the end of the collected text, so they
    * are trimmed back off.
+   *
+   * `comments` enables `#` comment skipping. It belongs to regions holding
+   * shell code — `$( )` and `<( )` — and must stay off for `${ }`, where `#`
+   * is the length and prefix-strip operator, and for arithmetic.
    */
-  private readBalanced(open: string, close: string, depth: number = 1): { text: string; closed: boolean } {
+  private readBalanced(open: string, close: string, depth: number = 1, comments: boolean = false): { text: string; closed: boolean } {
     const extraClosers = depth - 1;
     const start = this.pos;
     let closed = false;
@@ -499,6 +553,11 @@ export class Tokenizer {
 
       if (ch === "\\") { this.pos += 2; continue; }
       if (ch === "'" || ch === '"') { this.skipQuoted(ch); continue; }
+
+      if (comments && ch === "#" && startsWord(this.src, this.pos, start)) {
+        while (this.pos < this.src.length && this.src[this.pos] !== "\n") this.pos++;
+        continue;
+      }
 
       if (ch === open) { depth++; }
       else if (ch === close) {
@@ -534,8 +593,8 @@ export class Tokenizer {
         const { text, closed } = this.readBalanced("(", ")", 2);
         result += "((" + text + (closed ? "))" : "");
       } else {
-        // $( command substitution )
-        const { text, closed } = this.readBalanced("(", ")");
+        // $( command substitution ) — holds shell code, so # opens a comment
+        const { text, closed } = this.readBalanced("(", ")", 1, true);
         result += "(" + text + (closed ? ")" : "");
       }
     } else if (ch === "{") {
@@ -589,7 +648,7 @@ export class Tokenizer {
   /** Read a parenthesized group: ( ... ) tracking nesting */
   private readParenGroup(): string {
     this.pos++; // skip (
-    const { text, closed } = this.readBalanced("(", ")");
+    const { text, closed } = this.readBalanced("(", ")", 1, true);
     return "(" + text + (closed ? ")" : "");
   }
 }

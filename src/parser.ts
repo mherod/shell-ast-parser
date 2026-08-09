@@ -57,6 +57,27 @@ function readAnsiCString(raw: string, start: number): { value: string; next: num
   return { value, next: i };
 }
 
+/**
+ * Find the `]` closing a bracket expression that opens at `start`, or -1 if
+ * there is none and the `[` is just a literal character.
+ *
+ * Two quirks of the syntax: `!` or `^` right after the `[` negates the set, and
+ * a `]` in first position is a literal member rather than the terminator —
+ * `[]a]` matches `]` or `a`.
+ */
+function findBracketClose(raw: string, start: number): number {
+  let i = start + 1;
+  if (raw[i] === "!" || raw[i] === "^") i++;
+  if (raw[i] === "]") i++;
+
+  while (i < raw.length) {
+    if (raw[i] === "]") return i;
+    i++;
+  }
+
+  return -1;
+}
+
 /** Skip a quoted span starting at the opening quote; returns the index past it */
 function skipQuoted(raw: string, start: number): number {
   const quote = raw[start]!;
@@ -72,14 +93,29 @@ function skipQuoted(raw: string, start: number): number {
 }
 
 /**
+ * Whether the character at `pos` begins a word — true at the start of the
+ * region, after whitespace, or after an operator that ends the previous word.
+ * Only there does `#` open a comment.
+ */
+function startsWord(raw: string, pos: number, regionStart: number): boolean {
+  if (pos === regionStart) return true;
+  const prev = raw[pos - 1]!;
+  return prev === " " || prev === "\t" || prev === "\n" || prev === ";" || prev === "&" || prev === "|" || prev === "(";
+}
+
+/**
  * Read a delimited region, starting at the index of its opener. Quoted spans
  * are skipped whole, so a delimiter inside a string does not close the region:
  * `$(grep ")" file)` runs to the last paren, not the quoted one.
  *
  * `depth` above 1 is for openers spelled with repeated delimiters, like `$((`.
  * The extra closers land at the end of the body, so they are trimmed off.
+ *
+ * `comments` enables `#` comment skipping. It belongs to regions holding shell
+ * code — `$( )` and `<( )` — and must stay off for `${ }`, where `#` is the
+ * length and prefix-strip operator, and for arithmetic.
  */
-function readDelimited(raw: string, open: number, openCh: string, closeCh: string, depth: number = 1): { body: string; next: number } {
+function readDelimited(raw: string, open: number, openCh: string, closeCh: string, depth: number = 1, comments: boolean = false): { body: string; next: number } {
   const extraClosers = depth - 1;
   const start = open + 1;
   let i = start;
@@ -89,6 +125,11 @@ function readDelimited(raw: string, open: number, openCh: string, closeCh: strin
 
     if (ch === "\\") { i += 2; continue; }
     if (ch === "'" || ch === '"') { i = skipQuoted(raw, i); continue; }
+
+    if (comments && ch === "#" && startsWord(raw, i, start)) {
+      while (i < raw.length && raw[i] !== "\n") i++;
+      continue;
+    }
 
     if (ch === openCh) depth++;
     else if (ch === closeCh) {
@@ -106,8 +147,9 @@ function readDelimited(raw: string, open: number, openCh: string, closeCh: strin
   return { body, next: i < raw.length ? i + 1 : i };
 }
 
+/** `$( )` and `<( )` bodies hold shell code, so `#` opens a comment */
 function readParenBody(raw: string, openParen: number): { body: string; next: number } {
-  return readDelimited(raw, openParen, "(", ")");
+  return readDelimited(raw, openParen, "(", ")", 1, true);
 }
 
 /**
@@ -433,7 +475,7 @@ export class Parser {
 
     const nameToken = this.advance();
     const name = this.tokenToCompoundWord(nameToken);
-    const args: CompoundWord[] = [];
+    const args: (CompoundWord | Assignment)[] = [];
 
     // Collect args and redirects
     while (
@@ -443,9 +485,12 @@ export class Parser {
     ) {
       if (this.at(TokenType.Redirect)) {
         redirects.push(this.parseRedirect());
+      } else if (this.at(TokenType.Assignment)) {
+        // The tokenizer only marks these past the command name for declaration
+        // builtins, where `X=(1 2)` is an argument rather than a subshell
+        args.push(this.parseAssignment());
       } else {
-        const tok = this.advance();
-        args.push(this.tokenToCompoundWord(tok));
+        args.push(this.tokenToCompoundWord(this.advance()));
       }
     }
 
@@ -473,8 +518,20 @@ export class Parser {
     const eqIdx = tok.value.indexOf("=");
     const lhs = tok.value.slice(0, eqIdx);
     const append = lhs.endsWith("+");
-    const name = append ? lhs.slice(0, -1) : lhs;
+    const target = append ? lhs.slice(0, -1) : lhs;
     const rawValue = tok.value.slice(eqIdx + 1);
+
+    // NAME[subscript] — the subscript is a word in its own right, so `$i` in
+    // `ITEMS[$i]=x` expands
+    const subscripted = target.match(/^([^[]+)\[(.+)\]$/);
+    const name = subscripted ? subscripted[1]! : target;
+    const subscript = subscripted
+      ? this.rawToCompoundWord(
+          subscripted[2]!,
+          { start: tok.range.start + name.length + 1, end: tok.range.start + name.length + 1 + subscripted[2]!.length },
+          tok.range.start + name.length + 1,
+        )
+      : null;
 
     // `VAR=(a b c)` is an array literal, but `VAR= (cmd)` is an empty
     // assignment followed by a subshell — only adjacency tells them apart.
@@ -483,6 +540,7 @@ export class Parser {
       return {
         type: "Assignment",
         name,
+        subscript,
         append,
         value,
         range: { start: tok.range.start, end: value.range.end },
@@ -492,6 +550,7 @@ export class Parser {
     return {
       type: "Assignment",
       name,
+      subscript,
       append,
       // The value starts after the `=`, so its parts are offset from the token
       value: rawValue.length > 0
@@ -1075,6 +1134,16 @@ export class Parser {
           addLiteral(ch, i);
           i++;
         }
+      } else if (quote === null && (ch === "*" || ch === "?")) {
+        // Glob metacharacters only glob unquoted — "*.ts" is a literal filename
+        flushLiteral(i);
+        parts.push({ type: "GlobPattern", value: ch, range: at(i, i + 1) });
+        i++;
+      } else if (quote === null && ch === "[" && findBracketClose(raw, i) !== -1) {
+        const close = findBracketClose(raw, i);
+        flushLiteral(i);
+        parts.push({ type: "GlobPattern", value: raw.slice(i, close + 1), range: at(i, close + 1) });
+        i = close + 1;
       } else if (quote === null && (ch === "<" || ch === ">") && raw[i + 1] === "(") {
         // <(cmd) / >(cmd) process substitution — never inside quotes
         flushLiteral(i);

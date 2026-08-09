@@ -20,9 +20,9 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      - run: bunx tsc --noEmit
+      - run: bun run typecheck
 
       # Timeout guards against a parser regression that loops forever rather
       # than failing — the bug class this suite was written to catch
-      - run: bun test
+      - run: bun run test
         timeout-minutes: 5
