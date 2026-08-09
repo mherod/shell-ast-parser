@@ -75,6 +75,66 @@ function startsWord(src: string, pos: number, regionStart: number): boolean {
   return isWhitespace(prev) || prev === "\n" || prev === ";" || prev === "&" || prev === "|" || prev === "(";
 }
 
+/**
+ * Read a heredoc operator's delimiter, with `pos` on the first `<`. Returns
+ * null when this is not a heredoc — `<<<` is a here-string, whose operand is an
+ * ordinary word rather than a body.
+ *
+ * Exported because the parser re-scans token text and needs the identical rule.
+ */
+export function readHereDocHeader(
+  text: string,
+  pos: number,
+): { delimiter: string; stripTabs: boolean; next: number } | null {
+  if (text[pos] !== "<" || text[pos + 1] !== "<" || text[pos + 2] === "<") return null;
+
+  let i = pos + 2;
+  let stripTabs = false;
+  if (text[i] === "-") { stripTabs = true; i++; }
+  while (i < text.length && isWhitespace(text[i]!)) i++;
+
+  let delimiter = "";
+  if (text[i] === "'" || text[i] === '"') {
+    const quote = text[i]!;
+    i++;
+    while (i < text.length && text[i] !== quote) { delimiter += text[i]; i++; }
+    if (i < text.length) i++;
+  } else {
+    while (i < text.length && !isWhitespace(text[i]!) && text[i] !== "\n") {
+      delimiter += text[i];
+      i++;
+    }
+  }
+
+  return delimiter === "" ? null : { delimiter, stripTabs, next: i };
+}
+
+/**
+ * Skip the bodies queued by heredoc operators on the line just ended, with
+ * `pos` on the first character after that newline. Bodies are raw text — no
+ * quote, comment or delimiter rule applies inside them — so a scanner looking
+ * for a closing `)` has to step over them wholesale.
+ */
+export function skipHereDocBodies(
+  text: string,
+  pos: number,
+  queue: readonly { delimiter: string; stripTabs: boolean }[],
+): number {
+  let i = pos;
+
+  for (const hd of queue) {
+    while (i < text.length) {
+      const lineEnd = text.indexOf("\n", i);
+      const end = lineEnd === -1 ? text.length : lineEnd;
+      const line = text.slice(i, end);
+      i = lineEnd === -1 ? text.length : lineEnd + 1;
+      if ((hd.stripTabs ? line.replace(/^\t+/, "") : line) === hd.delimiter) break;
+    }
+  }
+
+  return i;
+}
+
 export interface PendingHereDoc {
   delimiter: string;
   stripTabs: boolean;
@@ -539,13 +599,15 @@ export class Tokenizer {
    * `$((`. The extra closers land at the end of the collected text, so they
    * are trimmed back off.
    *
-   * `comments` enables `#` comment skipping. It belongs to regions holding
-   * shell code — `$( )` and `<( )` — and must stay off for `${ }`, where `#`
-   * is the length and prefix-strip operator, and for arithmetic.
+   * `shellCode` marks regions whose contents are shell code — `$( )` and
+   * `<( )` — where `#` opens a comment and `<<` opens a heredoc whose body must
+   * be stepped over. It stays off for `${ }`, where `#` is the length and
+   * prefix-strip operator, and for arithmetic.
    */
-  private readBalanced(open: string, close: string, depth: number = 1, comments: boolean = false): { text: string; closed: boolean } {
+  private readBalanced(open: string, close: string, depth: number = 1, shellCode: boolean = false): { text: string; closed: boolean } {
     const extraClosers = depth - 1;
     const start = this.pos;
+    const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
     let closed = false;
 
     while (this.pos < this.src.length) {
@@ -554,8 +616,23 @@ export class Tokenizer {
       if (ch === "\\") { this.pos += 2; continue; }
       if (ch === "'" || ch === '"') { this.skipQuoted(ch); continue; }
 
-      if (comments && ch === "#" && startsWord(this.src, this.pos, start)) {
+      if (shellCode && ch === "#" && startsWord(this.src, this.pos, start)) {
         while (this.pos < this.src.length && this.src[this.pos] !== "\n") this.pos++;
+        continue;
+      }
+
+      if (shellCode && ch === "<" && this.src[this.pos + 1] === "<") {
+        const header = readHereDocHeader(this.src, this.pos);
+        if (header) {
+          heredocs.push({ delimiter: header.delimiter, stripTabs: header.stripTabs });
+          this.pos = header.next;
+          continue;
+        }
+      }
+
+      if (ch === "\n" && heredocs.length > 0) {
+        this.pos = skipHereDocBodies(this.src, this.pos + 1, heredocs);
+        heredocs.length = 0;
         continue;
       }
 

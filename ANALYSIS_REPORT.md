@@ -9,10 +9,10 @@ forever in `parseCompoundList`. That was not in the original report, which
 concluded the parser was "fundamentally sound".
 
 Findings 1–5 are defects the parser had, 6–10 are constructs it silently dropped
-on the floor, and 11–18 are places where the AST asserted things about the
+on the floor, and 11–19 are places where the AST asserted things about the
 source that were not true.
 
-Status: all findings below are fixed. `bun test` → 160 pass / 0 fail. `tsc --noEmit` → clean.
+Status: all findings below are fixed. `bun test` → 171 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -295,6 +295,36 @@ literal, so `"*.ts"`, `'*'` and `\*` all stay `Word`s. Bracket expressions
 handle `!`/`^` negation and a leading `]` as a literal member; an unclosed `[`
 is a literal. `[[` is unaffected, having no closing bracket.
 
+### 19. Heredoc bodies were scanned as if they were code — MEDIUM
+**Files:** `src/tokenizer.ts`, `src/parser.ts`
+
+The delimiter scanners knew about quotes (13) and comments (15) but not
+heredocs, so a body opened inside `$( … )` was scanned as shell syntax:
+
+```
+x=$(cat <<EOF
+a ) b
+EOF
+)
+```
+
+The `)` on the body line closed the substitution, leaving `b`, `EOF` and `)` as
+stray tokens. An unbalanced quote in a body did the same thing less visibly —
+`its " odd` opened a quote span that swallowed the rest of the file, and the
+region only *looked* right because everything landed in one token.
+
+The root cause is that a heredoc body is raw text: no quote, comment or
+delimiter rule applies inside it, so a scanner has to step over it wholesale.
+
+**Fix:** two exported helpers, `readHereDocHeader` and `skipHereDocBodies`,
+shared by both scanners. Operators are queued as they are seen and the bodies
+are skipped at the newline that ends the line, mirroring how the tokenizer
+already handles top-level heredocs. Handles `<<-`, quoted delimiters, and
+several heredocs on one command.
+
+Gating this on the shell-code flag is what keeps `<<` an operator elsewhere:
+`$((1<<2))` and `${a<<b}` are unaffected, since neither region holds shell code.
+
 ---
 
 ## Original findings that did not hold
@@ -317,10 +347,6 @@ for code that lives in `parser.ts`.
 
 ## Known gaps
 
-- **Heredocs opened inside `$( … )`.** The scanners handle quotes, escapes and
-  comments, but a heredoc started inside a substitution is not tracked. This one
-  needs the substitution body tokenized as it is scanned rather than captured
-  first and parsed after — the others were fixable within the scan.
 - **Extended globs.** `?(a|b)`, `*(…)`, `+(…)` are unsupported: the
   metacharacter reads as a plain glob and the parenthesised list becomes a
   separate subshell, so `echo ?(a|b)` yields two commands. They require
@@ -332,7 +358,7 @@ for code that lives in `parser.ts`.
 
 ## Regression coverage added
 
-`src/parser.test.ts`, 160 tests total: heredoc content attachment, two-heredoc
+`src/parser.test.ts`, 171 tests total: heredoc content attachment, two-heredoc
 ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
 `[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
 detached-paren disambiguation, unterminated), background on pipelines and lists

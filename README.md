@@ -105,8 +105,6 @@ Assignments cover scalars, arrays (`X=(a b)`), appends (`X+=y`), subscripts
 
 ## Known limitations
 
-- **Heredocs opened inside `$( … )`** are not tracked while scanning the
-  substitution. Quotes, escapes and `#` comments are.
 - **Extended globs** (`?(…)`, `*(…)`, `+(…)`) are not supported. The
   metacharacter is read as a plain glob and the parenthesised list becomes a
   separate subshell, so `echo ?(a|b)` parses as two commands. These need

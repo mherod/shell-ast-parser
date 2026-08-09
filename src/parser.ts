@@ -4,7 +4,7 @@ import type {
   IfClause, ForClause, WhileClause, UntilClause, CaseClause, CaseItem,
   Subshell, BraceGroup, FunctionDef, Comment, Coproc,
 } from "./ast.ts";
-import { tokenize, type Token, TokenType } from "./tokenizer.ts";
+import { tokenize, readHereDocHeader, skipHereDocBodies, type Token, TokenType } from "./tokenizer.ts";
 
 const ANSI_C_ESCAPES: Record<string, string> = {
   a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f",
@@ -111,13 +111,15 @@ function startsWord(raw: string, pos: number, regionStart: number): boolean {
  * `depth` above 1 is for openers spelled with repeated delimiters, like `$((`.
  * The extra closers land at the end of the body, so they are trimmed off.
  *
- * `comments` enables `#` comment skipping. It belongs to regions holding shell
- * code — `$( )` and `<( )` — and must stay off for `${ }`, where `#` is the
- * length and prefix-strip operator, and for arithmetic.
+ * `shellCode` marks regions whose contents are shell code — `$( )` and `<( )` —
+ * where `#` opens a comment and `<<` opens a heredoc whose body must be stepped
+ * over. It stays off for `${ }`, where `#` is the length and prefix-strip
+ * operator, and for arithmetic.
  */
-function readDelimited(raw: string, open: number, openCh: string, closeCh: string, depth: number = 1, comments: boolean = false): { body: string; next: number } {
+function readDelimited(raw: string, open: number, openCh: string, closeCh: string, depth: number = 1, shellCode: boolean = false): { body: string; next: number } {
   const extraClosers = depth - 1;
   const start = open + 1;
+  const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
   let i = start;
 
   while (i < raw.length) {
@@ -126,8 +128,23 @@ function readDelimited(raw: string, open: number, openCh: string, closeCh: strin
     if (ch === "\\") { i += 2; continue; }
     if (ch === "'" || ch === '"') { i = skipQuoted(raw, i); continue; }
 
-    if (comments && ch === "#" && startsWord(raw, i, start)) {
+    if (shellCode && ch === "#" && startsWord(raw, i, start)) {
       while (i < raw.length && raw[i] !== "\n") i++;
+      continue;
+    }
+
+    if (shellCode && ch === "<" && raw[i + 1] === "<") {
+      const header = readHereDocHeader(raw, i);
+      if (header) {
+        heredocs.push({ delimiter: header.delimiter, stripTabs: header.stripTabs });
+        i = header.next;
+        continue;
+      }
+    }
+
+    if (ch === "\n" && heredocs.length > 0) {
+      i = skipHereDocBodies(raw, i + 1, heredocs);
+      heredocs.length = 0;
       continue;
     }
 

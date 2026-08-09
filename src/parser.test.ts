@@ -798,6 +798,79 @@ describe("glob patterns", () => {
   });
 });
 
+describe("heredocs inside substitutions", () => {
+  const words = (src: string) => tokenize(src).filter(t => t.type !== TokenType.EOF).map(t => t.value);
+  const substitution = (src: string) =>
+    (parseShell(src).commands[0] as any).commands[0].assignments[0].value.parts[0];
+  const inner = (src: string) => substitution(src).body.commands[0].commands[0];
+
+  test("a ) in the body does not close the substitution", () => {
+    const src = "x=$(cat <<EOF\na ) b\nEOF\n)";
+    expect(words(src)).toEqual([src]);
+    expect(inner(src).redirects[0].target.content).toBe("a ) b\n");
+  });
+
+  test("an unbalanced quote in the body is inert", () => {
+    const src = 'x=$(cat <<EOF\nits " odd\nEOF\n)';
+    expect(words(src)).toEqual([src]);
+    expect(inner(src).redirects[0].target.content).toBe('its " odd\n');
+  });
+
+  test("<<- bodies are skipped and stripTabs is recorded", () => {
+    const src = "x=$(cat <<-EOF\n\tindented )\n\tEOF\n)";
+    expect(words(src)).toEqual([src]);
+    expect(inner(src).redirects[0].target.stripTabs).toBe(true);
+  });
+
+  test("a quoted delimiter still suppresses expansion", () => {
+    const src = "x=$(cat <<'EOF'\n$(nope)\nEOF\n)";
+    expect(words(src)).toEqual([src]);
+    const target = inner(src).redirects[0].target;
+    expect(target.quoted).toBe(true);
+    expect(target.content).toBe("$(nope)\n");
+  });
+
+  test("two heredocs in one substitution keep their own bodies", () => {
+    const src = "x=$(cat <<A <<B\none )\nA\ntwo )\nB\n)";
+    expect(words(src)).toEqual([src]);
+    expect(inner(src).redirects.map((r: any) => r.target.content)).toEqual(["one )\n", "two )\n"]);
+  });
+
+  test("the substitution body range still maps to the source", () => {
+    const src = "x=$(cat <<EOF\na ) b\nEOF\n)";
+    const body = substitution(src).body;
+    expect(src.slice(body.range.start, body.range.end)).toBe("cat <<EOF\na ) b\nEOF\n");
+  });
+
+  test("parsing resumes after the substitution", () => {
+    const script = parseShell("x=$(cat <<EOF\na ) b\nEOF\n)\necho done");
+    expect(script.commands.length).toBe(2);
+    expect((script.commands[1] as any).commands[0].name.parts[0].value).toBe("echo");
+  });
+
+  test("a heredoc inside a process substitution", () => {
+    const src = "diff <(cat <<EOF\n)\nEOF\n) b";
+    expect(words(src)).toEqual(["diff", "<(cat <<EOF\n)\nEOF\n)", "b"]);
+  });
+
+  test("<<< is a here-string, not a heredoc", () => {
+    expect(words("x=$(echo <<<here)")).toEqual(["x=$(echo <<<here)"]);
+  });
+
+  test("<< is left-shift in arithmetic, not a heredoc", () => {
+    const part = (src: string) =>
+      (parseShell(src).commands[0] as any).commands[0].assignments[0].value.parts[0];
+    expect(part("x=$((1<<2))").expression).toBe("1<<2");
+    expect(part("x=${a<<b}").expression).toBe("a<<b");
+  });
+
+  test("unterminated heredocs do not hang", () => {
+    for (const src of ["x=$(cat <<EOF", "x=$(cat <<EOF\nnoterm", "x=$(cat <<", "x=$(cat <<-"]) {
+      expect(() => parseShell(src)).not.toThrow();
+    }
+  });
+});
+
 describe("fixture: sample.sh", () => {
   test("parses the full fixture without throwing", async () => {
     const src = await Bun.file("fixtures/sample.sh").text();
