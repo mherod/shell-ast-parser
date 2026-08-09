@@ -57,6 +57,31 @@ const SNIPPETS: Snippet[] = [
     name: "[[ ]] with leading newline after [[",
     source: "[[\n  -n $A\n]] && echo yes\n",
   },
+
+  // Requiring the closing `]]` could plausibly break legitimate conditions that
+  // contain parens or brackets of their own, so cover the ordinary forms too
+  { name: "grouping parens", source: "[[ ( -n $A || -n $B ) && -n $C ]] && echo yes\n" },
+  { name: "nested grouping parens", source: "[[ ( ( -n $A ) ) ]] && echo yes\n" },
+  { name: "negated group", source: "[[ ! ( -n $A ) ]] && echo yes\n" },
+  { name: "glob with bracket class", source: "[[ $f == [a-z]* ]] && echo yes\n" },
+  { name: "extglob group", source: "[[ $f == @(a|b) ]] && echo yes\n" },
+  { name: "regex with group", source: "[[ $s =~ ^(a|b)+$ ]] && echo yes\n" },
+  { name: "string compare", source: '[[ "$a" == "$b" ]] && echo yes\n' },
+  { name: "arithmetic compare", source: "[[ $a -gt 3 ]] && echo yes\n" },
+  { name: "file tests joined", source: "[[ -f $f && -r $f ]] && echo yes\n" },
+  { name: "condition then redirect", source: "[[ -n $A ]] > /dev/null\n" },
+  { name: "nested [[ in subshell", source: "( [[ -n $A ]] ) && echo yes\n" },
+  { name: "[[ inside while", source: "while [[ -n $A ]]; do\n  break\ndone\n" },
+  { name: "[[ ]] on one line with ;", source: "[[ -n $A ]]; echo after\n" },
+  { name: "array subscript in condition", source: "[[ -n ${arr[1]} ]] && echo yes\n" },
+
+  // The four constructs the startup files still fail on, each reduced to its
+  // essence. If bash rejects them they are zsh extensions and out of scope; if
+  // bash accepts any, it is a gap worth closing.
+  { name: "zsh anonymous function", source: "function {\n  echo hi\n}\n" },
+  { name: "zsh short for-loop", source: 'for x ("$arr[@]") echo $x\n' },
+  { name: "zsh glob qualifier in array", source: "X=(dir/*(-/FN) $X)\n" },
+  { name: "zsh glob qualifier (N) in array", source: "X=($HOME/bin(N) $X)\n" },
 ];
 
 async function shellAccepts(shell: string, source: string): Promise<string | null> {

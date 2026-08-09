@@ -210,6 +210,8 @@ interface Failure {
   message: string;
   token: string;
   text: string;
+  /** A closer left unbalanced by recovery, rather than a defect of its own */
+  cascade?: boolean;
 }
 
 interface Report {
@@ -278,14 +280,27 @@ async function probe(path: string): Promise<Report> {
     }
   }
 
+  // Resuming after a failure can land inside a block, so the block's own closer
+  // then looks unbalanced. Those are artefacts of the recovery, not separate
+  // defects, and counting them as findings overstates how much is broken.
+  // The first failure is never one: nothing has been recovered from yet, so a
+  // lone closer there is a real finding.
+  const CASCADE = new Set(["fi", "done", "esac", "}", ")", "then", "else", "elif", "do"]);
+  for (const [index, failure] of failures.entries()) {
+    failure.cascade = index > 0 && CASCADE.has(failure.text.replace(/[;\s].*$/, ""));
+  }
+
+  const roots = failures.filter((failure) => !failure.cascade);
   for (const failure of failures) {
-    console.log(`  PARSE FAILED at line ${failure.line}:${failure.column} — ${redact(failure.message)}`);
+    const label = failure.cascade ? "cascade after recovery" : "PARSE FAILED";
+    console.log(`  ${label} at line ${failure.line}:${failure.column} — ${redact(failure.message)}`);
+    if (failure.cascade) continue;
     console.log(`    token: ${redact(failure.token)}`);
     console.log(`    line:  ${redact(failure.text)}`);
   }
 
   if (script === null) {
-    return { ...base, ok: false, failures, detail: `${failures.length} parse failures, no AST` };
+    return { ...base, ok: false, failures, detail: `${roots.length} parse failures, no AST` };
   }
 
   // Range and coverage checks compare against the whole file, so they are only
@@ -309,7 +324,7 @@ async function probe(path: string): Promise<Report> {
     console.log(`    line ${at.line}: ${JSON.stringify(redact(gap.text))} in ${JSON.stringify(redact(at.text.trim()))}`);
   }
 
-  const problems = failures.length + faults.length + gaps.length;
+  const problems = roots.length + faults.length + gaps.length;
   return {
     ...base,
     ok: problems === 0,
@@ -317,7 +332,7 @@ async function probe(path: string): Promise<Report> {
     detail:
       problems === 0
         ? "parsed"
-        : `${failures.length} failures, ${faults.length} range faults, ${gaps.length} gaps`,
+        : `${roots.length} failures (+${failures.length - roots.length} cascade), ${faults.length} range faults, ${gaps.length} gaps`,
   };
 }
 
