@@ -247,6 +247,35 @@ export interface GlobQualifier {
   range: Range;
 }
 
+/**
+ * `{a,b,c}` — the alternatives are words, so `{a,$x}` keeps its expansion.
+ * Unlike a glob this does not consult the filesystem: the shell writes out one
+ * copy of the surrounding word per item, matching or not.
+ */
+export interface BraceList {
+  type: "BraceExpansion";
+  kind: "list";
+  /** as written, braces included */
+  value: string;
+  items: CompoundWord[];
+  range: Range;
+}
+
+/** `{0..9}`, `{a..z}`, `{0..20..5}` — endpoints as written, since `a..z` counts too */
+export interface BraceSequence {
+  type: "BraceExpansion";
+  kind: "sequence";
+  value: string;
+  from: string;
+  to: string;
+  /** the increment, or null when it is left out */
+  step: string | null;
+  range: Range;
+}
+
+/** Discriminate on `kind`; both keep `value` as written */
+export type BraceExpansion = BraceList | BraceSequence;
+
 /** Discriminate on `kind`; every variant keeps `value` as written */
 export type GlobPattern =
   | GlobWildcard
@@ -268,6 +297,7 @@ export type WordPart =
   | CommandSubstitution
   | ArithmeticExpansion
   | ProcessSubstitution
+  | BraceExpansion
   | GlobPattern;
 
 /** A compound word is a sequence of parts that form a single argument.
@@ -371,6 +401,11 @@ export interface Subshell {
 export interface BraceGroup {
   type: "BraceGroup";
   body: Script;
+  /**
+   * zsh's `{ … } always { … }`: the second group runs whether or not the first
+   * one succeeded, the way a `finally` does. null when there is no `always`.
+   */
+  always: Script | null;
   redirects: Redirect[];
   range: Range;
 }
@@ -670,9 +705,10 @@ export interface CaseItem {
   body: Script;
   /**
    * `;;` ends the case, `;&` falls through to the next body, and `;;&` goes on
-   * testing later patterns. Null when the last item omits it before `esac`.
+   * testing later patterns — which zsh spells `;|`. Null when the last item
+   * omits it before `esac`.
    */
-  terminator: ";;" | ";&" | ";;&" | null;
+  terminator: ";;" | ";&" | ";;&" | ";|" | null;
   range: Range;
 }
 

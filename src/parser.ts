@@ -236,6 +236,43 @@ function isQualifierGroup(raw: string, open: number): boolean {
   return body.length > 0 && !body.includes("|") && QUALIFIER_CHARS.test(body);
 }
 
+/**
+ * Where the `}` closing the `{` at `open` sits, and what is inside — but only
+ * when the braces expand. `{a}` and `${x}` do not: a list needs a comma and a
+ * sequence needs `..`, so anything else is literal text the shell leaves alone.
+ */
+function readBraceExpansion(raw: string, open: number): { body: string; end: number; commas: number[] } | null {
+  if (open > 0 && raw[open - 1] === "$") return null;
+
+  const commas: number[] = [];
+  let depth = 0;
+
+  for (let i = open; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (ch === "\\") { i++; continue; }
+    if (ch === "'" || ch === '"') { i = skipQuoted(raw, i) - 1; continue; }
+
+    if (ch === "{") depth++;
+    else if (ch === ",") { if (depth === 1) commas.push(i); }
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        const body = raw.slice(open + 1, i);
+        const expands = commas.length > 0 || /^[^.]*\.\.[^.]/.test(body);
+        return expands ? { body, end: i + 1, commas } : null;
+      }
+    }
+  }
+
+  return null;
+}
+
+/** `{0..9}` and `{0..20..5}`, with the endpoints kept as written */
+function readBraceSequence(body: string): { from: string; to: string; step: string | null } | null {
+  const match = /^([^.]+)\.\.([^.]+?)(?:\.\.([^.]+))?$/.exec(body);
+  return match ? { from: match[1]!, to: match[2]!, step: match[3] ?? null } : null;
+}
+
 /** `<1->`, `<-9>`, `<1-9>`, `<->` — an open end is null */
 function readNumericRange(raw: string, at: number): { min: number | null; max: number | null; end: number } | null {
   const match = /^<(\d*)-(\d*)>/.exec(raw.slice(at));
@@ -539,11 +576,18 @@ export class Parser {
 
   // ── Compound list (script body) ────────────────────────────────
 
-  private parseCompoundList(_topLevel: boolean = false): Command[] {
+  /**
+   * `stopAtBrace` reads a zsh condition, where a `{` that follows it opens the
+   * body: `if (( x )) { … }`. It only stops once something has been read, so a
+   * brace group can still be the condition itself.
+   */
+  private parseCompoundList(_topLevel: boolean = false, stopAtBrace: boolean = false): Command[] {
     const commands: Command[] = [];
     this.skipNewlinesAndSemicolons();
 
     while (!this.at(TokenType.EOF) && !this.isListTerminator()) {
+      if (stopAtBrace && commands.length > 0 && this.atBraceGroup()) break;
+
       const before = this.pos;
       const cmd = this.parseList();
 
@@ -577,7 +621,7 @@ export class Parser {
       return true;
     }
     // A closing `}` mid-line tokenizes as an Operator, but still ends the list
-    return this.atAny(TokenType.Operator, ")", ";;", ";&", ";;&", "}");
+    return this.atAny(TokenType.Operator, ")", ";;", ";&", ";;&", ";|", "}");
   }
 
   // ── List: pipeline (&&/|| pipeline)* ───────────────────────────
@@ -608,7 +652,9 @@ export class Parser {
     const start = this.peek().range.start;
     let negated = false;
 
-    if (this.atAny(TokenType.Keyword, "!")) {
+    // A lone `!` always negates; no command is named that, so accept it however
+    // the tokenizer classified it
+    if (this.atAny(TokenType.Keyword, "!") || this.atAny(TokenType.Word, "!")) {
       this.advance();
       negated = true;
     }
@@ -878,10 +924,62 @@ export class Parser {
 
   // ── Compound commands ──────────────────────────────────────────
 
+  /** Whether a `{` sits here, however the tokenizer classified it */
+  private atBraceGroup(): boolean {
+    const tok = this.peek();
+    return tok.value === "{" && (tok.type === TokenType.Keyword || tok.type === TokenType.Operator);
+  }
+
+  /**
+   * zsh's brace form: `if cond { … } elif cond { … } else { … }`. The braces
+   * delimit the body, so there is no `then` to open it and no `fi` to close it.
+   */
+  private parseBraceIf(start: number, condition: Script): IfClause {
+    const thenBody = this.wrapScript([this.parseBraceGroup()]);
+
+    const elifs: { condition: Script; then: Script }[] = [];
+    this.skipNewlines();
+    while (this.atWord("elif")) {
+      this.advance();
+      this.skipNewlines();
+      const elifCond = this.wrapScript(this.parseCompoundList(false, true));
+      elifs.push({ condition: elifCond, then: this.wrapScript([this.parseBraceGroup()]) });
+      this.skipNewlines();
+    }
+
+    let elseBody: Script | null = null;
+    if (this.atWord("else")) {
+      this.advance();
+      this.skipNewlines();
+      // `else { … }`, or `else if …` continuing the chain
+      elseBody = this.wrapScript([this.atBraceGroup() ? this.parseBraceGroup() : this.parseCommand()]);
+    }
+
+    const redirects = this.parseTrailingRedirects();
+    const end = this.lastEnd(start);
+
+    return {
+      type: "IfClause",
+      condition,
+      then: thenBody,
+      elifs,
+      else: elseBody,
+      redirects,
+      range: { start, end: redirects.length > 0 ? redirects[redirects.length - 1]!.range.end : end },
+    };
+  }
+
   private parseIf(): IfClause {
     const start = this.expect(TokenType.Keyword, "if").range.start;
     this.skipNewlines();
-    const condition = this.wrapScript(this.parseCompoundList());
+    const condition = this.wrapScript(this.parseCompoundList(false, this.dialect === "zsh"));
+
+    // zsh writes the body in braces instead: `if (( x )) { … }`, with no `then`
+    // and no `fi`. `else` may follow with braces of its own.
+    if (this.dialect === "zsh" && !this.atWord("then") && this.atBraceGroup()) {
+      return this.parseBraceIf(start, condition);
+    }
+
     this.expectWord("then");
     this.skipNewlines();
     const thenBody = this.wrapScript(this.parseCompoundList());
@@ -1196,18 +1294,79 @@ export class Parser {
     };
   }
 
+  /**
+   * Whether the `(` at the cursor opens a group inside the pattern rather than
+   * the case item. Scan to its match: if the next token starts where that `)`
+   * ends, with no space between, the two are one word and so is the pattern.
+   */
+  private parenBelongsToPattern(): boolean {
+    let depth = 0;
+
+    for (let i = this.pos; i < this.tokens.length; i++) {
+      const tok = this.tokens[i]!;
+      if (tok.type !== TokenType.Operator) continue;
+
+      if (tok.value === "(") depth++;
+      else if (tok.value === ")") {
+        depth--;
+        if (depth === 0) {
+          const next = this.tokens[i + 1];
+          return next !== undefined && next.range.start === tok.range.end && next.type !== TokenType.Newline;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * One case pattern, however many tokens the tokenizer made of it. A pattern
+   * runs to the `|` that starts the next alternative or the `)` that ends the
+   * list, and in between it may hold a group — `(scalar|integer)*` — or even an
+   * unquoted space, as in `(*# SKIP*)`. Gaps are refilled so the text still
+   * lines up with the source it came from.
+   */
+  private parsePatternWord(): CompoundWord {
+    const start = this.peek().range.start;
+    let text = "";
+    let end = start;
+    let depth = 0;
+
+    while (!this.at(TokenType.EOF) && !this.at(TokenType.Newline)) {
+      const tok = this.peek();
+      const operator = tok.type === TokenType.Operator;
+
+      if (depth === 0 && operator && (tok.value === ")" || tok.value === "|") && text !== "") break;
+
+      if (operator && tok.value === "(") depth++;
+      else if (operator && tok.value === ")") depth--;
+
+      if (text !== "" && tok.range.start > end) text += " ".repeat(tok.range.start - end);
+      text += tok.value;
+      end = tok.range.end;
+      this.advance();
+    }
+
+    return this.rawToCompoundWord(text, { start, end }, start);
+  }
+
   private parseCaseItem(): CaseItem {
     const start = this.peek().range.start;
 
-    // Optional leading (
-    if (this.atAny(TokenType.Operator, "(")) this.advance();
+    // Optional leading `(`. It may instead belong to the pattern, as in
+    // `(scalar|integer)*)` — what tells them apart is the space: a pattern is
+    // one word, so its closing `)` is followed immediately by more of it,
+    // while the item's `)` is followed by the body.
+    const grouped = this.atAny(TokenType.Operator, "(") && this.parenBelongsToPattern();
+    if (this.atAny(TokenType.Operator, "(") && !grouped) {
+      this.advance();
+    }
 
-    const patterns: CompoundWord[] = [];
-    patterns.push(this.tokenToCompoundWord(this.advance()));
+    const patterns: CompoundWord[] = [this.parsePatternWord()];
 
     while (this.atAny(TokenType.Operator, "|")) {
       this.advance();
-      patterns.push(this.tokenToCompoundWord(this.advance()));
+      patterns.push(this.parsePatternWord());
     }
 
     this.expect(TokenType.Operator, ")");
@@ -1216,9 +1375,9 @@ export class Parser {
     const commands = this.parseCompoundList();
     const body = this.wrapScript(commands);
 
-    let terminator: ";;" | ";&" | ";;&" | null = null;
-    if (this.atAny(TokenType.Operator, ";;", ";&", ";;&")) {
-      terminator = this.advance().value as ";;" | ";&" | ";;&";
+    let terminator: CaseItem["terminator"] = null;
+    if (this.atAny(TokenType.Operator, ";;", ";&", ";;&", ";|")) {
+      terminator = this.advance().value as CaseItem["terminator"];
     }
 
     const end = this.lastEnd(start);
@@ -1251,12 +1410,26 @@ export class Parser {
     const start = this.expectWord("{").range.start;
     this.skipNewlines();
     const body = this.wrapScript(this.parseCompoundList());
-    const end = this.expectWord("}").range.end;
+    let end = this.expectWord("}").range.end;
+
+    // zsh: `{ … } always { … }` runs the second group either way, so the two
+    // belong to one command rather than reading as a stray `always`
+    let always: Script | null = null;
+    if (this.dialect === "zsh" && this.atWord("always")) {
+      this.advance();
+      this.skipNewlines();
+      this.expectWord("{");
+      this.skipNewlines();
+      always = this.wrapScript(this.parseCompoundList());
+      end = this.expectWord("}").range.end;
+    }
+
     const redirects = this.parseTrailingRedirects();
 
     return {
       type: "BraceGroup",
       body,
+      always,
       redirects,
       range: { start, end: redirects.length > 0 ? redirects[redirects.length - 1]!.range.end : end },
     };
@@ -1813,6 +1986,41 @@ export class Parser {
         } else {
           addLiteral(ch, i);
           i++;
+        }
+      } else if (quote === null && ch === "{" && readBraceExpansion(raw, i) !== null) {
+        // `{a,b}` and `{0..9}` — the shell writes out one copy of the word per
+        // item, so this is neither a glob nor an expansion of a variable
+        const brace = readBraceExpansion(raw, i)!;
+        flushLiteral(i);
+        const start = i;
+        const bodyStart = i + 1;
+        i = brace.end;
+
+        const sequence = brace.commas.length === 0 ? readBraceSequence(brace.body) : null;
+        if (sequence) {
+          parts.push({
+            type: "BraceExpansion",
+            kind: "sequence",
+            value: raw.slice(start, i),
+            ...sequence,
+            range: at(start, i),
+          });
+        } else {
+          // Split on the top-level commas already found, so a nested `{x,y}`
+          // stays inside its item
+          const bounds = [bodyStart - 1, ...brace.commas, i - 1];
+          const items = bounds.slice(0, -1).map((from, index) => {
+            const itemStart = from + 1;
+            const text = raw.slice(itemStart, bounds[index + 1]!);
+            return this.rawToCompoundWord(text, at(itemStart, itemStart + text.length), offset + itemStart);
+          });
+          parts.push({
+            type: "BraceExpansion",
+            kind: "list",
+            value: raw.slice(start, i),
+            items,
+            range: at(start, i),
+          });
         }
       } else if (quote === null && this.dialect === "zsh" && ch === "(" && isQualifierGroup(raw, i)) {
         // zsh glob qualifier: `bin(N)`, `*(-/FN)` — it selects among what the

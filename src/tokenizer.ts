@@ -327,8 +327,14 @@ export class Tokenizer {
       }
 
       if (ch === "#") {
-        this.readComment();
-        continue;
+        // zsh: a `#` pressed against a `(` is pattern syntax — the repeat
+        // operator in `(#*)`, or a flag as in `(#i)` — not a comment. A comment
+        // needs whitespace before it.
+        const afterOpenParen = this.dialect === "zsh" && this.src[this.pos - 1] === "(";
+        if (!afterOpenParen) {
+          this.readComment();
+          continue;
+        }
       }
 
       // The operand of `=~` is a regex, so `(`, `)` and `|` belong to it rather
@@ -344,6 +350,15 @@ export class Tokenizer {
       }
 
       if (ch === "<" || ch === ">") {
+        // zsh: `<->` and `<1-9>` are numeric ranges wherever a pattern may
+        // appear, not redirects. No redirect has that shape. `<` is not a word
+        // character, so the range is taken here rather than left to readWord,
+        // which would consume nothing and spin.
+        if (this.atNumericRange()) {
+          this.readWord();
+          continue;
+        }
+
         // Inside `[[ … ]]` these compare strings; only process substitution
         // still takes a paren group there
         if (this.inTestCommand && this.src[this.pos + 1] !== "(") {
@@ -394,13 +409,25 @@ export class Tokenizer {
           range: { start: this.pos, end: this.pos + 1 },
         });
         this.pos++;
-        if (ch === "(") this.atCommandStart = true;
+        // Both ends of a group open a command position: `(` starts the one
+        // inside, and after `)` a new command may follow — the body of a case
+        // item begins right there, keywords and all.
+        if (ch === "(" || ch === ")") this.atCommandStart = true;
         if (opensArray) this.inDeclarationCommand = declarationContext;
         if (ch === ")") this.recordFunctionDefinition();
         continue;
       }
 
       if (ch === "{" || ch === "}") {
+        // A `{` that opens a group is followed by a blank — that is the rule
+        // the shell enforces by insisting on the space in `{ cmd; }`. Without
+        // one the brace belongs to the word, where `{a,b}` and `{0..9}` expand
+        // and `{}` is literal. The closing `}` comes back with it.
+        if (ch === "{" && !/[\s\n;]/.test(this.src[this.pos + 1] ?? " ")) {
+          this.readWord();
+          continue;
+        }
+
         if (this.atCommandStart && (ch === "{" || ch === "}")) {
           this.tokens.push({
             type: TokenType.Keyword,
@@ -430,6 +457,15 @@ export class Tokenizer {
     });
 
     return this.tokens;
+  }
+
+  /** zsh's `<->`, `<1-9>` and friends — no redirect has that shape */
+  private atNumericRange(): boolean {
+    return (
+      this.dialect === "zsh" &&
+      this.src[this.pos] === "<" &&
+      /^<\d*-\d*>/.test(this.src.slice(this.pos, this.pos + 24))
+    );
   }
 
   private skipWhitespace(): void {
@@ -475,6 +511,8 @@ export class Tokenizer {
         if (this.src[this.pos] === "&") { value = ";;&"; this.pos++; }
       }
       else if (ch === ";" && next === "&") { value = ";&"; this.pos++; }
+      // zsh spells `;;&` as `;|`
+      else if (this.dialect === "zsh" && ch === ";" && next === "|") { value = ";|"; this.pos++; }
     }
 
     this.tokens.push({
@@ -643,10 +681,18 @@ export class Tokenizer {
       }
 
       if (ch === "'") {
-        // Single-quoted string: no expansions
+        // Single-quoted string: no expansions. After `$` it is the `$'…'` form,
+        // where backslash escapes do work — including `\'`, which a plain
+        // single-quoted string cannot contain at all.
+        const ansiC = value.endsWith("$");
         value += ch;
         this.pos++;
         while (this.pos < this.src.length && this.src[this.pos] !== "'") {
+          if (ansiC && this.src[this.pos] === "\\" && this.pos + 1 < this.src.length) {
+            value += this.src[this.pos]! + this.src[this.pos + 1]!;
+            this.pos += 2;
+            continue;
+          }
           value += this.src[this.pos];
           this.pos++;
         }
@@ -728,6 +774,15 @@ export class Tokenizer {
         continue;
       }
 
+      // zsh: `<->` is a numeric range, and it may sit inside a larger pattern
+      // as in `$dir/<->-<->.data`. `<` is otherwise not a word character.
+      if (this.atNumericRange()) {
+        const match = /^<\d*-\d*>/.exec(this.src.slice(this.pos, this.pos + 24))!;
+        value += match[0];
+        this.pos += match[0].length;
+        continue;
+      }
+
       if (!isWordChar(ch)) break;
 
       if (ch === "=" && !hasEquals) {
@@ -761,8 +816,10 @@ export class Tokenizer {
         value,
         range: { start, end: this.pos },
       });
-      // Keywords like do, then, { start a new command context
-      const startsCommand = ["do", "then", "else", "elif", "!", "[["].includes(value);
+      // Keywords like do, then, { start a new command context. `if`, `while`
+      // and `until` do too — a command follows each of them, and without this
+      // the `!` in `if ! grep …` arrives as a word and stops negating.
+      const startsCommand = ["do", "then", "else", "elif", "!", "[[", "if", "while", "until"].includes(value);
       this.atCommandStart = startsCommand;
       return;
     }
@@ -822,6 +879,13 @@ export class Tokenizer {
       if (ch === "\n") break;
       if (ch === "\\") { this.pos += 2; continue; }
       if (ch === "'" || ch === '"') { this.skipQuoted(ch); continue; }
+
+      // An expansion is one unit: the space in `${cached% *}` is inside it and
+      // does not end the operand
+      if (ch === "$" && (this.src[this.pos + 1] === "{" || this.src[this.pos + 1] === "(")) {
+        this.readDollar();
+        continue;
+      }
 
       if (ch === "(") depth++;
       else if (ch === ")" && depth > 0) depth--;
@@ -981,7 +1045,12 @@ export class Tokenizer {
         continue;
       }
 
-      if (ch === open) { depth++; }
+      // Inside `${…}` only `${` nests. A lone `{` is ordinary text there, so
+      // counting it would leave the depth short by one and run the scan past
+      // the real closing brace — `${x:/p/\${y}}` is where this shows.
+      const nests = open === "{" ? ch === "{" && this.src[this.pos - 1] === "$" : ch === open;
+
+      if (nests) { depth++; }
       else if (ch === close) {
         depth--;
         if (depth === 0) { closed = true; break; }

@@ -1862,6 +1862,182 @@ describe("the zsh dialect", () => {
   });
 });
 
+describe("brace expansion", () => {
+  const parts = (src: string) => {
+    const cmd = (parseShell(src).commands[0] as any).commands[0];
+    return cmd.args[0].parts;
+  };
+
+  test("a list keeps its items as words", () => {
+    const brace = parts("echo {a,b,c}")[0];
+    expect(brace.type).toBe("BraceExpansion");
+    expect(brace.kind).toBe("list");
+    expect(brace.items.map((i: any) => i.parts[0]?.value)).toEqual(["a", "b", "c"]);
+  });
+
+  test("an item may be empty", () => {
+    // `{,s}bin` gives bin and sbin, so the first alternative expands to nothing
+    // while still marking where it sat
+    const brace = parts("echo {,s}bin")[0];
+    expect(brace.items.length).toBe(2);
+    expect(brace.items[0].parts[0].value).toBe("");
+    expect(brace.items[0].range.start).toBe(brace.items[0].range.end);
+  });
+
+  test("an item keeps its expansion", () => {
+    const brace = parts("echo {a,$x}")[0];
+    expect(brace.items[1].parts[0].type).toBe("VariableExpansion");
+  });
+
+  test("a sequence keeps its endpoints as written", () => {
+    const brace = parts("echo {0..255}")[0];
+    expect(brace.kind).toBe("sequence");
+    expect(brace.from).toBe("0");
+    expect(brace.to).toBe("255");
+    expect(brace.step).toBeNull();
+  });
+
+  test("a sequence may carry a step, and may count letters", () => {
+    expect(parts("echo {0..20..5}")[0].step).toBe("5");
+    expect(parts("echo {a..z}")[0].from).toBe("a");
+  });
+
+  test("braces that cannot expand stay literal", () => {
+    // No comma and no `..`, so the shell leaves these alone
+    for (const src of ["echo {a}", "echo {}", "echo ${x}"]) {
+      expect(parts(src).some((p: any) => p.type === "BraceExpansion")).toBe(false);
+    }
+  });
+
+  test("a brace group is still a brace group", () => {
+    const cmd = (parseShell("{ echo hi; }").commands[0] as any).commands[0];
+    expect(cmd.type).toBe("BraceGroup");
+  });
+
+  test("expansion works where a word list is expected", () => {
+    const loop = (parseShell("for c in {0..3}; do :; done").commands[0] as any).commands[0];
+    expect(loop.words[0].parts[0].kind).toBe("sequence");
+  });
+});
+
+describe("quoting and escapes the shell resolves", () => {
+  const first = (src: string) => (parseShell(src).commands[0] as any).commands[0];
+
+  test("$'…' may contain an escaped quote", () => {
+    // A plain '…' cannot hold a quote at all, so `\'` only means something here
+    expect(() => parseShell("BUFFER=$': $(( 0 * 1\\'\\'000 ))'")).not.toThrow();
+  });
+
+  test("an escaped brace does not close an expansion", () => {
+    // `\}` is literal, so the expansion ends at the last brace, not the first
+    const cmd = first('x="${a:/p/\\${b}}"\necho after');
+    expect(cmd.type).toBe("SimpleCommand");
+    expect(parseShell('x="${a:/p/\\${b}}"\necho after').commands.length).toBe(2);
+  });
+});
+
+describe("negation is not lost", () => {
+  // `if ! grep …` used to parse as a command named "!", dropping the negation
+  // and inverting what the condition meant.
+  const conditionOf = (src: string) =>
+    ((parseShell(src).commands[0] as any).commands[0]).condition.commands[0];
+
+  test("a pipeline negates after if", () => {
+    expect(conditionOf("if ! true; then :; fi").negated).toBe(true);
+  });
+
+  test("a pipeline negates after while", () => {
+    expect(conditionOf("while ! true; do :; done").negated).toBe(true);
+  });
+
+  test("the negated command is still the command", () => {
+    const pipeline = conditionOf("if ! grep -q x f; then :; fi");
+    expect(pipeline.commands[0].name.parts[0].value).toBe("grep");
+  });
+
+  test("a plain pipeline is unaffected", () => {
+    const pipeline = (parseShell("! true").commands[0] as any);
+    expect(pipeline.negated).toBe(true);
+  });
+});
+
+describe("case items", () => {
+  const items = (src: string) => ((parseShell(src, { dialect: "zsh" }).commands[0] as any).commands[0]).items;
+
+  test("a body may start on the pattern line with a keyword", () => {
+    const body = items("case $x in\n  (none) if true; then\n    echo hi\n  fi\n  ;;\nesac")[0].body;
+    expect(body.commands[0].commands[0].type).toBe("IfClause");
+  });
+
+  test("a pattern may hold a group", () => {
+    const item = items("case $x in\n  (scalar|integer)*) echo hi;;\nesac")[0];
+    expect(item.patterns.length).toBe(1);
+    expect(item.patterns[0].parts.map((p: any) => p.kind)).toEqual(["extended", "wildcard"]);
+  });
+
+  test("a pattern may hold an unquoted space", () => {
+    const item = items("case $x in\n  (*# SKIP*) echo hi;;\nesac")[0];
+    expect(item.patterns.length).toBe(1);
+  });
+
+  test("alternatives still split on |", () => {
+    expect(items("case $x in\n  a|b) echo hi;;\nesac")[0].patterns.length).toBe(2);
+  });
+
+  test("zsh spells ;;& as ;|", () => {
+    expect(items("case $x in\n  a) echo hi;|\n  b) echo ho;;\nesac")[0].terminator).toBe(";|");
+  });
+});
+
+describe("more of the zsh dialect", () => {
+  const zsh = (src: string) => parseShell(src, { dialect: "zsh" });
+  const first = (src: string) => (zsh(src).commands[0] as any).commands[0];
+
+  test("a brace group may carry an always block", () => {
+    const group = first("{ echo a } always { echo b }");
+    expect(group.type).toBe("BraceGroup");
+    expect(group.always.commands.length).toBe(1);
+  });
+
+  test("always survives inside a condition", () => {
+    expect(() => zsh('if ! { read -q "?y " } always { echo "" }; then\n  :\nfi')).not.toThrow();
+  });
+
+  test("a plain brace group has no always", () => {
+    expect(first("{ echo a; }").always).toBeNull();
+  });
+
+  test("if may take a brace body instead of then/fi", () => {
+    const clause = first("if (( EUID == 0 )) { echo root }");
+    expect(clause.type).toBe("IfClause");
+    expect(clause.then.commands[0].type).toBe("BraceGroup");
+  });
+
+  test("a brace group can still be the condition itself", () => {
+    expect(() => zsh("if { true }; then\n  :\nfi")).not.toThrow();
+  });
+
+  test("bash still needs then and fi", () => {
+    expect(() => parseShell("if (( 1 )) { echo hi }", { dialect: "bash" })).toThrow(ParseError);
+  });
+
+  test("a numeric range works outside a condition", () => {
+    const parts = first("print -l <->").args[1].parts;
+    expect(parts[0].kind).toBe("numeric-range");
+  });
+
+  test("a numeric range may sit inside a larger pattern", () => {
+    const value = first("x=($dir/<->-<->.data(.N))").assignments[0].value;
+    const kinds = value.elements[0].parts.map((p: any) => p.kind ?? p.type);
+    expect(kinds).toContain("numeric-range");
+    expect(kinds).toContain("qualifier");
+  });
+
+  test("a redirect is still a redirect", () => {
+    expect(first("cat < f").redirects[0].op).toBe("<");
+  });
+});
+
 describe("line continuations", () => {
   // A backslash-newline is removed before parsing, so it contributes no token.
   // It used to arrive as a Word, which quietly added an argument to a command
