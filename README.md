@@ -87,13 +87,22 @@ parseShell('echo "$(rm -rf /)"');  // a CommandSubstitution, quoted "double"
 **Escapes are resolved.** `Word.value` holds the literal text the shell would
 use: `"\$HOME"` yields `$HOME`, and `$'a\tb'` yields a real tab.
 
+**Arithmetic is a tree.** `$(( … ))`, `(( … ))` and C-style `for` headers parse
+into expression nodes with real precedence, so `$((1+2*3))` nests the
+multiplication. `expression` keeps the raw text alongside; `parsed` is null when
+the text does not fit the grammar.
+
+```ts
+parseShell("echo $((1+2*3))");   // ArithmeticBinary + { left: 1, right: (2 * 3) }
+```
+
 ## Supported
 
 Simple commands, pipelines (`|`, `!`), lists (`&&`, `||`, `;`), background (`&`),
 redirections (`>`, `>>`, `<`, `>&`, `<&`, `>|`, `<>`, `<<<`) and heredocs
 (`<<`, `<<-`, quoted delimiters, several per command), `if`/`elif`/`else`,
-`for`, `while`, `until`, `case`, subshells, brace groups, functions (both
-forms), `coproc`, `[[ … ]]`, comments.
+`for` (both word-list and C-style), `while`, `until`, `case`, `(( … ))`,
+subshells, brace groups, functions (both forms), `coproc`, `[[ … ]]`, comments.
 
 Words resolve into parts: literals, variable expansions (`$x`, `${x:-d}`),
 command substitutions (`$( )` and backticks), arithmetic (`$(( ))`), process
@@ -113,10 +122,10 @@ Assignments cover scalars, arrays (`X=(a b)`), appends (`X+=y`), subscripts
   the pattern text, so the alternatives of `@(a|b)` and the members of `[abc]`
   are not separate nodes — and an expansion inside one, as in `@($x|b)`, is
   part of that text rather than a `VariableExpansion`.
-- **Arithmetic is not parsed.** `ArithmeticExpansion.expression` is the raw
-  text between the parens.
 - **`case` patterns and `[[ … ]]` contents** are kept as words rather than
   being modelled as test expressions.
+- **`let` is not special-cased.** `let "i = 1"` keeps its argument as an
+  ordinary word rather than parsing it as arithmetic.
 
 ## Development
 

@@ -1,10 +1,12 @@
 import type {
   Script, Command, SimpleCommand, Pipeline, ListItem,
   CompoundWord, WordPart, Redirect, HereDoc, Assignment, ArrayLiteral, Range, QuoteContext,
-  IfClause, ForClause, WhileClause, UntilClause, CaseClause, CaseItem,
+  IfClause, ForClause, ArithmeticForClause, ArithmeticCommand, ArithmeticExpr,
+  WhileClause, UntilClause, CaseClause, CaseItem,
   Subshell, BraceGroup, FunctionDef, Comment, Coproc,
 } from "./ast.ts";
-import { tokenize, readHereDocHeader, skipHereDocBodies, EXTGLOB_LEADS, type Token, TokenType } from "./tokenizer.ts";
+import { tokenize, readHereDocHeader, skipHereDocBodies, readExpansionExtent, splitArithmeticClauses, EXTGLOB_LEADS, type Token, TokenType } from "./tokenizer.ts";
+import { parseArithmetic } from "./arithmetic.ts";
 
 const ANSI_C_ESCAPES: Record<string, string> = {
   a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f",
@@ -443,6 +445,10 @@ export class Parser {
       return this.parseBraceGroup();
     }
 
+    if (tok.type === TokenType.Arithmetic) {
+      return this.parseArithmeticCommand();
+    }
+
     if (tok.type === TokenType.Operator && tok.value === "(") {
       return this.parseSubshell();
     }
@@ -685,8 +691,67 @@ export class Parser {
     };
   }
 
-  private parseFor(): ForClause {
+  private parseArithmeticCommand(): ArithmeticCommand {
+    const tok = this.expect(TokenType.Arithmetic);
+    const redirects = this.parseTrailingRedirects();
+
+    return {
+      type: "ArithmeticCommand",
+      expression: tok.value,
+      // +2 to step over the `((`
+      parsed: this.parseArithmeticText(tok.value, tok.range.start + 2),
+      redirects,
+      range: {
+        start: tok.range.start,
+        end: redirects.length > 0 ? redirects[redirects.length - 1]!.range.end : tok.range.end,
+      },
+    };
+  }
+
+  /**
+   * `for (( init; condition; update ))`. Clauses split on top-level `;` — a
+   * nested `;` cannot occur inside parens or quotes, both of which are skipped.
+   */
+  private parseArithmeticFor(start: number): ArithmeticForClause {
+    const tok = this.expect(TokenType.Arithmetic);
+    const clauses = splitArithmeticClauses(tok.value);
+    const parseClause = (index: number): ArithmeticExpr | null => {
+      const clause = clauses[index];
+      return clause === undefined
+        ? null
+        : this.parseArithmeticText(clause.text, tok.range.start + 2 + clause.offset);
+    };
+
+    const init = parseClause(0);
+    const condition = parseClause(1);
+    const update = parseClause(2);
+
+    if (this.atAny(TokenType.Operator, ";")) this.advance();
+    this.skipNewlines();
+    this.expectWord("do");
+    this.skipNewlines();
+    const body = this.wrapScript(this.parseCompoundList());
+    const end = this.expectWord("done").range.end;
+    const redirects = this.parseTrailingRedirects();
+
+    return {
+      type: "ArithmeticForClause",
+      init,
+      condition,
+      update,
+      body,
+      redirects,
+      range: { start, end: redirects.length > 0 ? redirects[redirects.length - 1]!.range.end : end },
+    };
+  }
+
+  private parseFor(): ForClause | ArithmeticForClause {
     const start = this.expect(TokenType.Keyword, "for").range.start;
+
+    if (this.at(TokenType.Arithmetic)) {
+      return this.parseArithmeticFor(start);
+    }
+
     const varTok = this.expect(TokenType.Word);
     const variable = varTok.value;
 
@@ -1103,11 +1168,13 @@ export class Parser {
         } else if (next === "(") {
           if (i + 2 < raw.length && raw[i + 2] === "(") {
             // $(( arithmetic ))
+            const exprStart = i + 3;
             const { body: expr, next: after } = readDelimited(raw, i + 2, "(", ")", 2);
             i = after;
             parts.push({
               type: "ArithmeticExpansion",
               expression: expr,
+              parsed: this.parseArithmeticText(expr, offset + exprStart),
               quoted: quote,
               range: at(start, i),
             });
@@ -1215,6 +1282,24 @@ export class Parser {
     }
 
     return parts;
+  }
+
+  /**
+   * Parse arithmetic text, resolving any `$…` operands through the same word
+   * machinery the rest of the parser uses, so `$(( $(f) + 1 ))` keeps a real
+   * `CommandSubstitution` rather than a string.
+   */
+  private parseArithmeticText(text: string, offset: number): ArithmeticExpr | null {
+    return parseArithmetic(text, offset, (raw, pos) => {
+      const extent = readExpansionExtent(raw, pos);
+      if (extent === null) return null;
+
+      const slice = raw.slice(pos, extent);
+      const range = { start: offset + pos, end: offset + extent };
+      const part = this.parseWordParts(slice, range, offset + pos)[0];
+
+      return part === undefined ? null : { part, next: extent };
+    });
   }
 
   /**

@@ -42,10 +42,95 @@ export interface CommandSubstitution {
 
 export interface ArithmeticExpansion {
   type: "ArithmeticExpansion";
+  /** raw text between the parens, always present */
   expression: string;
+  /** the parsed form, or null if the text does not fit the arithmetic grammar */
+  parsed: ArithmeticExpr | null;
   quoted: QuoteContext;
   range: Range;
 }
+
+// ── Arithmetic ─────────────────────────────────────────────────────
+
+export interface ArithmeticNumber {
+  type: "ArithmeticNumber";
+  /** decoded value: handles 0x hex, leading-zero octal and base#digits */
+  value: number;
+  raw: string;
+  range: Range;
+}
+
+export interface ArithmeticVariable {
+  type: "ArithmeticVariable";
+  name: string;
+  range: Range;
+}
+
+/** A `$…` or backtick expansion used as an operand */
+export interface ArithmeticSubstitution {
+  type: "ArithmeticSubstitution";
+  part: WordPart;
+  range: Range;
+}
+
+/** `a[i]` — the index is itself an arithmetic expression */
+export interface ArithmeticSubscript {
+  type: "ArithmeticSubscript";
+  name: string;
+  index: ArithmeticExpr;
+  range: Range;
+}
+
+export interface ArithmeticUnary {
+  type: "ArithmeticUnary";
+  op: "+" | "-" | "!" | "~";
+  operand: ArithmeticExpr;
+  range: Range;
+}
+
+/** `++x` and `x++` — `prefix` says which */
+export interface ArithmeticUpdate {
+  type: "ArithmeticUpdate";
+  op: "++" | "--";
+  prefix: boolean;
+  operand: ArithmeticExpr;
+  range: Range;
+}
+
+export interface ArithmeticBinary {
+  type: "ArithmeticBinary";
+  op: string;
+  left: ArithmeticExpr;
+  right: ArithmeticExpr;
+  range: Range;
+}
+
+export interface ArithmeticAssignment {
+  type: "ArithmeticAssignment";
+  op: string;
+  target: ArithmeticVariable | ArithmeticSubscript;
+  value: ArithmeticExpr;
+  range: Range;
+}
+
+export interface ArithmeticConditional {
+  type: "ArithmeticConditional";
+  condition: ArithmeticExpr;
+  then: ArithmeticExpr;
+  else: ArithmeticExpr;
+  range: Range;
+}
+
+export type ArithmeticExpr =
+  | ArithmeticNumber
+  | ArithmeticVariable
+  | ArithmeticSubstitution
+  | ArithmeticSubscript
+  | ArithmeticUnary
+  | ArithmeticUpdate
+  | ArithmeticBinary
+  | ArithmeticAssignment
+  | ArithmeticConditional;
 
 export interface ProcessSubstitution {
   type: "ProcessSubstitution";
@@ -201,6 +286,26 @@ export interface ForClause {
   range: Range;
 }
 
+/** `(( expr ))` as a command — succeeds when the value is non-zero */
+export interface ArithmeticCommand {
+  type: "ArithmeticCommand";
+  expression: string;
+  parsed: ArithmeticExpr | null;
+  redirects: Redirect[];
+  range: Range;
+}
+
+/** `for (( init; condition; update ))` — any clause may be empty */
+export interface ArithmeticForClause {
+  type: "ArithmeticForClause";
+  init: ArithmeticExpr | null;
+  condition: ArithmeticExpr | null;
+  update: ArithmeticExpr | null;
+  body: Script;
+  redirects: Redirect[];
+  range: Range;
+}
+
 export interface WhileClause {
   type: "WhileClause";
   condition: Script;
@@ -253,9 +358,11 @@ export interface Coproc {
 export type CompoundCommand =
   | IfClause
   | ForClause
+  | ArithmeticForClause
   | WhileClause
   | UntilClause
   | CaseClause
+  | ArithmeticCommand
   | Subshell
   | BraceGroup;
 

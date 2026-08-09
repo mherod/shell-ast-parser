@@ -9,10 +9,10 @@ forever in `parseCompoundList`. That was not in the original report, which
 concluded the parser was "fundamentally sound".
 
 Findings 1–5 are defects the parser had, 6–10 are constructs it silently dropped
-on the floor, and 11–20 are places where the AST asserted things about the
+on the floor, and 11–21 are places where the AST asserted things about the
 source that were not true.
 
-Status: all findings below are fixed. `bun test` → 184 pass / 0 fail. `tsc --noEmit` → clean.
+Status: all findings below are fixed. `bun test` → 211 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -351,6 +351,44 @@ One input remains odd: `echo \?(a)` yields a literal `?` followed by a
 subshell. The escape correctly suppresses the glob; the trailing `(a)` is a
 syntax error in bash, so there is no correct tree to produce.
 
+### 21. Arithmetic was raw text, and its two command forms were broken — HIGH
+**Files:** `src/arithmetic.ts` (new), `src/tokenizer.ts`, `src/parser.ts`, `src/ast.ts`
+
+`ArithmeticExpansion.expression` was a string, so nothing downstream could see
+operators or precedence. The two commands that carry arithmetic were worse than
+unparsed:
+
+- `(( i++ ))` produced two nested `Subshell`s. In `(( i < 10 ))` the `<` was
+  lexed as a **redirection** — the tree claimed a file redirect that does not
+  exist.
+- `for ((i=0;i<3;i++))` threw a `ParseError` outright.
+
+**Fix:** a precedence-climbing parser in `src/arithmetic.ts` covering bash's
+operator set — assignment, ternary, the logical, bitwise, equality, relational
+and shift families, `+ - * / %`, `**`, unary `+ - ! ~`, prefix and postfix
+`++`/`--`, array subscripts, and the comma operator. `**` is the only
+right-associative binary operator; assignment and `?:` associate right too.
+Numbers decode from decimal, `0x` hex, leading-zero octal and `base#digits`.
+
+`ArithmeticExpansion` gains `parsed`, and two nodes are new: `ArithmeticCommand`
+for `(( … ))` and `ArithmeticForClause` for the C-style loop, whose three
+clauses split on top-level `;`.
+
+Operands that are expansions stay real nodes: `$(( $(f) + 1 ))` holds a
+`CommandSubstitution` with its own parsed body, not a string.
+
+Two decisions worth recording:
+
+- **`((` is trial-parsed before being claimed.** `((cd /tmp) && ls)` is a
+  legitimate pair of nested subshells, so the text is parsed as arithmetic
+  first and only taken if it fits — the same disambiguation bash performs.
+  A `for` header additionally allows its `;`-separated clauses.
+- **Unparseable arithmetic yields `parsed: null`, not an error.** `expression`
+  always holds the raw text, so nothing is lost, and an unmodelled corner of
+  bash arithmetic cannot fail the surrounding script. This differs from the
+  substitution-body decision in finding 8, where the text was otherwise
+  discarded entirely and silence would have hidden it.
+
 ---
 
 ## Original findings that did not hold
@@ -376,12 +414,13 @@ for code that lives in `parser.ts`.
 - **Glob patterns are not decomposed.** `GlobPattern.value` is the pattern text,
   so the alternatives of `@(a|b)` and the members of `[abc]` are not separate
   nodes, and an expansion inside one is not a `VariableExpansion`.
-- **Arithmetic is not parsed.** `ArithmeticExpansion.expression` is raw text.
 - **`case` patterns and `[[ … ]]` contents** are words, not test expressions.
+- **`let` and arithmetic in other builtins** are not parsed: `let "i = 1"` keeps
+  its argument as an ordinary word.
 
 ## Regression coverage added
 
-`src/parser.test.ts`, 184 tests total: heredoc content attachment, two-heredoc
+`src/parser.test.ts`, 211 tests total: heredoc content attachment, two-heredoc
 ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
 `[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
 detached-paren disambiguation, unterminated), background on pipelines and lists

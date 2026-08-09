@@ -927,6 +927,188 @@ describe("extended globs", () => {
   });
 });
 
+describe("arithmetic expressions", () => {
+  const expansion = (src: string) =>
+    (parseShell(`echo $((${src}))`).commands[0] as any).commands[0].args[0].parts[0];
+  const tree = (src: string) => expansion(src).parsed;
+
+  /** Fully-parenthesised rendering, so precedence and associativity are visible */
+  const show = (n: any): string => {
+    switch (n?.type) {
+      case "ArithmeticNumber": return String(n.value);
+      case "ArithmeticVariable": return n.name;
+      case "ArithmeticSubstitution": return `<${n.part.type}>`;
+      case "ArithmeticSubscript": return `${n.name}[${show(n.index)}]`;
+      case "ArithmeticUnary": return `(${n.op}${show(n.operand)})`;
+      case "ArithmeticUpdate": return n.prefix ? `(${n.op}${show(n.operand)})` : `(${show(n.operand)}${n.op})`;
+      case "ArithmeticBinary": return `(${show(n.left)} ${n.op} ${show(n.right)})`;
+      case "ArithmeticAssignment": return `(${show(n.target)} ${n.op} ${show(n.value)})`;
+      case "ArithmeticConditional": return `(${show(n.condition)} ? ${show(n.then)} : ${show(n.else)})`;
+      default: return "null";
+    }
+  };
+
+  test("multiplication binds tighter than addition", () => {
+    expect(show(tree("1+2*3"))).toBe("(1 + (2 * 3))");
+    expect(show(tree("(1+2)*3"))).toBe("((1 + 2) * 3)");
+  });
+
+  test("** is right-associative, unlike the other binary operators", () => {
+    expect(show(tree("2**3**2"))).toBe("(2 ** (3 ** 2))");
+    expect(show(tree("1-2-3"))).toBe("((1 - 2) - 3)");
+  });
+
+  test("assignment is right-associative", () => {
+    expect(show(tree("a=b=5"))).toBe("(a = (b = 5))");
+    expect(show(tree("x+=2"))).toBe("(x += 2)");
+  });
+
+  test("comparison binds tighter than the logical operators", () => {
+    expect(show(tree("1<2 && 3>2"))).toBe("((1 < 2) && (3 > 2))");
+  });
+
+  test("shift binds tighter than bitwise or", () => {
+    expect(show(tree("1<<3|2"))).toBe("((1 << 3) | 2)");
+  });
+
+  test("ternaries nest to the right", () => {
+    expect(show(tree("a?b?c:d:e"))).toBe("(a ? (b ? c : d) : e)");
+  });
+
+  test("unary and update operators", () => {
+    expect(show(tree("-x + +y"))).toBe("((-x) + (+y))");
+    expect(show(tree("!a"))).toBe("(!a)");
+    expect(show(tree("~a"))).toBe("(~a)");
+    expect(show(tree("i++ + ++j"))).toBe("((i++) + (++j))");
+  });
+
+  test("array subscripts are themselves expressions", () => {
+    expect(show(tree("a[i+1]+2"))).toBe("(a[(i + 1)] + 2)");
+  });
+
+  test("the comma operator", () => {
+    expect(show(tree("a,b,c"))).toBe("((a , b) , c)");
+  });
+
+  describe("number bases", () => {
+    test("hex, octal and decimal", () => {
+      expect(tree("0xff").value).toBe(255);
+      expect(tree("010").value).toBe(8);
+      expect(tree("42").value).toBe(42);
+    });
+
+    test("base#digits", () => {
+      expect(tree("2#1010").value).toBe(10);
+      expect(tree("16#ff").value).toBe(255);
+    });
+
+    test("the raw text is kept alongside the value", () => {
+      expect(tree("0xff").raw).toBe("0xff");
+    });
+  });
+
+  describe("embedded expansions", () => {
+    test("a command substitution is a real node, not text", () => {
+      const sub = tree("$(f) + 1").left;
+      expect(sub.type).toBe("ArithmeticSubstitution");
+      expect(sub.part.type).toBe("CommandSubstitution");
+      expect(sub.part.body.commands[0].commands[0].name.parts[0].value).toBe("f");
+    });
+
+    test("a parameter expansion keeps its expression", () => {
+      const sub = tree("${#a} * 2").left;
+      expect(sub.part.type).toBe("VariableExpansion");
+      expect(sub.part.expression).toBe("#a");
+    });
+  });
+
+  test("operand ranges index the source", () => {
+    const src = "echo $((a + 1))";
+    const node = (parseShell(src).commands[0] as any).commands[0].args[0].parts[0].parsed;
+    expect(src.slice(node.left.range.start, node.left.range.end)).toBe("a");
+    expect(src.slice(node.right.range.start, node.right.range.end)).toBe("1");
+  });
+
+  describe("text that is not arithmetic", () => {
+    for (const src of ["", "1+", "a b"]) {
+      test(`${JSON.stringify(src)} yields null and keeps the raw text`, () => {
+        const part = expansion(src);
+        expect(part.parsed).toBeNull();
+        expect(part.expression).toBe(src);
+      });
+    }
+  });
+});
+
+describe("arithmetic commands", () => {
+  const first = (src: string) => {
+    const command = parseShell(src).commands[0] as any;
+    return command.commands?.[0] ?? command;
+  };
+
+  test("(( … )) is an arithmetic command, not nested subshells", () => {
+    const cmd = first("(( i++ ))");
+    expect(cmd.type).toBe("ArithmeticCommand");
+    expect(cmd.parsed.type).toBe("ArithmeticUpdate");
+  });
+
+  test("< inside (( … )) is a comparison, not a redirection", () => {
+    const cmd = first("(( i < 10 ))");
+    expect(cmd.parsed.op).toBe("<");
+    expect(cmd.redirects).toEqual([]);
+  });
+
+  test("nested subshells are still subshells", () => {
+    expect(first("((cd /tmp) && ls)").type).toBe("Subshell");
+    expect(first("( (echo a) )").type).toBe("Subshell");
+  });
+
+  test("trailing redirects are captured", () => {
+    expect(first("(( i++ )) > out").redirects.length).toBe(1);
+  });
+});
+
+describe("C-style for loops", () => {
+  const first = (src: string) => {
+    const command = parseShell(src).commands[0] as any;
+    return command.commands?.[0] ?? command;
+  };
+
+  test("all three clauses are parsed", () => {
+    const loop = first("for ((i=0;i<3;i++)); do echo $i; done");
+    expect(loop.type).toBe("ArithmeticForClause");
+    expect(loop.init.type).toBe("ArithmeticAssignment");
+    expect(loop.condition.op).toBe("<");
+    expect(loop.update.op).toBe("++");
+    expect(loop.body.commands.length).toBe(1);
+  });
+
+  test("for ((;;)) leaves every clause null", () => {
+    const loop = first("for ((;;)); do :; done");
+    expect(loop.init).toBeNull();
+    expect(loop.condition).toBeNull();
+    expect(loop.update).toBeNull();
+  });
+
+  test("clause ranges index the source", () => {
+    const src = "for ((i=0;i<3;i++)); do :; done";
+    const loop = first(src);
+    expect(src.slice(loop.init.range.start, loop.init.range.end)).toBe("i=0");
+    expect(src.slice(loop.condition.range.start, loop.condition.range.end)).toBe("i<3");
+    expect(src.slice(loop.update.range.start, loop.update.range.end)).toBe("i++");
+  });
+
+  test("redirects are captured", () => {
+    expect(first("for ((i=0;i<3;i++)); do :; done > out").redirects.length).toBe(1);
+  });
+
+  test("a classic for loop is unaffected", () => {
+    const loop = first("for i in 1 2; do :; done");
+    expect(loop.type).toBe("ForClause");
+    expect(loop.variable).toBe("i");
+  });
+});
+
 describe("fixture: sample.sh", () => {
   test("parses the full fixture without throwing", async () => {
     const src = await Bun.file("fixtures/sample.sh").text();

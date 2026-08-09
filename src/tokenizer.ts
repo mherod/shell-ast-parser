@@ -1,3 +1,5 @@
+import { parseArithmetic } from "./arithmetic.ts";
+
 export enum TokenType {
   /** A bare or quoted word / argument */
   Word = "Word",
@@ -17,6 +19,8 @@ export enum TokenType {
   EOF = "EOF",
   /** Here-document body */
   HereDocBody = "HereDocBody",
+  /** The inside of a `(( … ))` arithmetic command, without the parens */
+  Arithmetic = "Arithmetic",
 }
 
 export interface Token {
@@ -76,6 +80,111 @@ function startsWord(src: string, pos: number, regionStart: number): boolean {
   if (pos === regionStart) return true;
   const prev = src[pos - 1]!;
   return isWhitespace(prev) || prev === "\n" || prev === ";" || prev === "&" || prev === "|" || prev === "(";
+}
+
+/** Skip a quoted span in `text`, with `pos` on the opening quote */
+function skipQuotedIn(text: string, pos: number): number {
+  const quote = text[pos]!;
+  let i = pos + 1;
+
+  while (i < text.length && text[i] !== quote) {
+    if (quote === '"' && text[i] === "\\") i += 2;
+    else i++;
+  }
+
+  return i < text.length ? i + 1 : i;
+}
+
+/**
+ * Index just past the delimiter matching the one at `open`, or -1 when it is
+ * unbalanced. Quoted spans are skipped whole. `depth` above 1 is for openers
+ * spelled with repeated delimiters, like `((`.
+ */
+function matchDelimiter(text: string, open: number, openCh: string, closeCh: string, depth: number = 1): number {
+  let i = open + 1;
+
+  while (i < text.length) {
+    const ch = text[i]!;
+
+    if (ch === "\\") { i += 2; continue; }
+    if (ch === "'" || ch === '"') { i = skipQuotedIn(text, i); continue; }
+
+    if (ch === openCh) depth++;
+    else if (ch === closeCh) {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+    i++;
+  }
+
+  return -1;
+}
+
+/**
+ * Split a C-style `for` header on its top-level `;`, keeping each clause's
+ * offset so its nodes can still point at the source. Parens and quotes are
+ * skipped, so a `;` inside either does not split.
+ */
+export function splitArithmeticClauses(text: string): { text: string; offset: number }[] {
+  const clauses: { text: string; offset: number }[] = [];
+  let depth = 0;
+  let start = 0;
+  let i = 0;
+
+  while (i < text.length) {
+    const ch = text[i]!;
+
+    if (ch === "\\") { i += 2; continue; }
+    if (ch === "'" || ch === '"') { i = skipQuotedIn(text, i); continue; }
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    else if (ch === ";" && depth === 0) {
+      clauses.push({ text: text.slice(start, i), offset: start });
+      start = i + 1;
+    }
+    i++;
+  }
+
+  clauses.push({ text: text.slice(start), offset: start });
+  return clauses;
+}
+
+/**
+ * Extent of the `$…` or backtick expansion starting at `pos`, or null when
+ * there is none. Shared by the arithmetic parser's two callers so both agree on
+ * where an operand ends.
+ */
+export function readExpansionExtent(text: string, pos: number): number | null {
+  if (text[pos] === "`") {
+    const close = text.indexOf("`", pos + 1);
+    return close === -1 ? text.length : close + 1;
+  }
+
+  if (text[pos] !== "$") return null;
+  const next = text[pos + 1];
+
+  if (next === "{") {
+    const end = matchDelimiter(text, pos + 1, "{", "}");
+    return end === -1 ? null : end;
+  }
+
+  if (next === "(") {
+    const arithmetic = text[pos + 2] === "(";
+    const end = arithmetic
+      ? matchDelimiter(text, pos + 2, "(", ")", 2)
+      : matchDelimiter(text, pos + 1, "(", ")");
+    return end === -1 ? null : end;
+  }
+
+  if (next !== undefined && /[a-zA-Z_]/.test(next)) {
+    let end = pos + 1;
+    while (end < text.length && /[a-zA-Z0-9_]/.test(text[end]!)) end++;
+    return end;
+  }
+
+  if (next !== undefined && /[0-9!?#$@*\-]/.test(next)) return pos + 2;
+
+  return null;
 }
 
 /**
@@ -208,6 +317,15 @@ export class Tokenizer {
 
       if (ch === "|" || ch === "&" || ch === ";") {
         this.readOperator();
+        continue;
+      }
+
+      // `(( … ))` arithmetic command. Attempted before the plain-paren path
+      // because `<` inside it is an operator, not a redirection.
+      const forHeader = this.lastTokenIs(TokenType.Keyword, "for");
+      if (ch === "(" && this.src[this.pos + 1] === "(" &&
+          (this.atCommandStart || forHeader) &&
+          this.readArithmeticCommand(forHeader)) {
         continue;
       }
 
@@ -592,6 +710,51 @@ export class Tokenizer {
     if (wasCommandStart && DECLARATION_BUILTINS.has(value)) {
       this.inDeclarationCommand = true;
     }
+  }
+
+  private lastTokenIs(type: TokenType, value: string): boolean {
+    const last = this.tokens[this.tokens.length - 1];
+    return last?.type === type && last.value === value;
+  }
+
+  /**
+   * Try to read `(( … ))` as an arithmetic command, returning false to leave
+   * `this.pos` untouched when it is not one.
+   *
+   * `((cd /tmp) && ls)` is a legitimate pair of nested subshells, so the text
+   * is trial-parsed as arithmetic first and only claimed if it fits — the same
+   * disambiguation bash performs.
+   *
+   * `forHeader` allows the `;`-separated clauses of `for (( … ; … ; … ))`,
+   * which are three expressions rather than one.
+   */
+  private readArithmeticCommand(forHeader: boolean): boolean {
+    const start = this.pos;
+    const end = matchDelimiter(this.src, this.pos + 1, "(", ")", 2);
+    if (end === -1 || this.src[end - 2] !== ")") return false;
+
+    const expression = this.src.slice(start + 2, end - 2);
+    // A placeholder part is enough here: this only asks "is this arithmetic?",
+    // and the parser re-parses the text with real expansion handling.
+    const fits = (text: string) => parseArithmetic(text, 0, (raw, pos) => {
+      const extent = readExpansionExtent(raw, pos);
+      return extent === null
+        ? null
+        : { part: { type: "Word", value: raw.slice(pos, extent), quoted: null, range: { start: pos, end: extent } }, next: extent };
+    }) !== null;
+
+    if (forHeader) {
+      // Every non-empty clause must parse; `for ((;;))` is all-empty and valid
+      const clauses = splitArithmeticClauses(expression);
+      if (!clauses.every(clause => clause.text.trim() === "" || fits(clause.text))) return false;
+    } else if (!fits(expression)) {
+      return false;
+    }
+
+    this.tokens.push({ type: TokenType.Arithmetic, value: expression, range: { start, end } });
+    this.pos = end;
+    this.atCommandStart = false;
+    return true;
   }
 
   /** Skip a quoted span. `this.pos` must be on the opening quote. */
