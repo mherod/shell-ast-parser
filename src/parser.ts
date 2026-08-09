@@ -4,8 +4,9 @@ import type {
   GlobBracketMember,
   IfClause, ForClause, ArithmeticForClause, ArithmeticCommand, ArithmeticExpr,
   LetCommand, LetExpression, TestCommand, TestExpr, RegexNode,
-  WhileClause, UntilClause, CaseClause, CaseItem,
+  WhileClause, UntilClause, RepeatClause, CaseClause, CaseItem,
   Subshell, BraceGroup, FunctionDef, Comment, Coproc,
+  Dialect, ParseOptions,
 } from "./ast.ts";
 import { tokenize, readHereDocHeader, skipHereDocBodies, readExpansionExtent, splitArithmeticClauses, EXTGLOB_LEADS, type Token, TokenType } from "./tokenizer.ts";
 import { parseArithmetic } from "./arithmetic.ts";
@@ -198,6 +199,55 @@ function splitAlternatives(text: string): { text: string; offset: number }[] {
   return alternatives;
 }
 
+/** Index just past the `)` matching the `(` at `open`, or -1 if unbalanced */
+function matchingParen(raw: string, open: number): number {
+  let depth = 0;
+
+  for (let i = open; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (ch === "\\") { i++; continue; }
+    if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) return i + 1;
+    }
+  }
+
+  return -1;
+}
+
+/** The characters zsh allows in a glob qualifier, e.g. `.`, `-/FN`, `om[1,3]` */
+const QUALIFIER_CHARS = /^[-\w.,:@=%^+/*\[\]]+$/;
+
+/**
+ * zsh tells a qualifier from a pattern group by where it sits: `(N)` in
+ * `bin(N)` closes the word and selects among the matches, while `(a|b)` in
+ * `[[ $x == (a|b) ]]` is the whole pattern and matches text. So a group only
+ * qualifies when something precedes it, it ends the word, and it holds no
+ * alternation.
+ */
+function isQualifierGroup(raw: string, open: number): boolean {
+  if (open === 0) return false;
+
+  const close = matchingParen(raw, open);
+  if (close !== raw.length) return false;
+
+  const body = raw.slice(open + 1, close - 1);
+  return body.length > 0 && !body.includes("|") && QUALIFIER_CHARS.test(body);
+}
+
+/** `<1->`, `<-9>`, `<1-9>`, `<->` — an open end is null */
+function readNumericRange(raw: string, at: number): { min: number | null; max: number | null; end: number } | null {
+  const match = /^<(\d*)-(\d*)>/.exec(raw.slice(at));
+  if (!match) return null;
+
+  return {
+    min: match[1] === "" ? null : parseInt(match[1]!, 10),
+    max: match[2] === "" ? null : parseInt(match[2]!, 10),
+    end: at + match[0].length,
+  };
+}
+
 /**
  * The literal text of a word that is nothing but literal text, or null when it
  * expands. `\(` and `'('` both resolve to `(`, which is how a group survives
@@ -361,9 +411,11 @@ export class Parser {
    * shell: names seen earlier in the source shadow, later ones do not.
    */
   private definedFunctions: Set<string> = new Set();
+  private dialect: Dialect;
 
-  constructor(tokens: Token[]) {
+  constructor(tokens: Token[], options: ParseOptions = {}) {
     this.tokens = tokens;
+    this.dialect = options.dialect ?? "bash";
   }
 
   parse(): Script {
@@ -592,6 +644,7 @@ export class Parser {
         case "for": return this.parseFor();
         case "while": return this.parseWhile();
         case "until": return this.parseUntil();
+        case "repeat": return this.parseRepeat();
         case "case": return this.parseCase();
         case "function": return this.parseFunctionKeyword();
         case "coproc": return this.parseCoproc();
@@ -958,8 +1011,12 @@ export class Parser {
       return this.parseArithmeticFor(start);
     }
 
-    const varTok = this.expect(TokenType.Word);
-    const variable = varTok.value;
+    const variables = [this.expect(TokenType.Word).value];
+
+    // zsh deals the words out between several variables: `for k v in a b c d`
+    while (this.dialect === "zsh" && this.at(TokenType.Word) && this.peek().value !== "in") {
+      variables.push(this.advance().value);
+    }
 
     let words: CompoundWord[] | null = null;
     this.skipNewlines();
@@ -969,11 +1026,57 @@ export class Parser {
       while (this.at(TokenType.Word)) {
         words.push(this.tokenToCompoundWord(this.advance()));
       }
+    } else if (this.dialect === "zsh" && this.atAny(TokenType.Operator, "(")) {
+      // zsh gives the list in parens instead: `for x (a b) …`
+      words = this.parseParenWordList();
     }
 
     // Skip optional ; or newline before do
     if (this.atAny(TokenType.Operator, ";")) this.advance();
     this.skipNewlines();
+
+    return this.parseForBody(start, variables, words);
+  }
+
+  /** zsh's parenthesised word list: `for x (a b) …` */
+  private parseParenWordList(): CompoundWord[] {
+    this.expect(TokenType.Operator, "(");
+
+    const words: CompoundWord[] = [];
+    this.skipNewlines();
+    while (!this.atAny(TokenType.Operator, ")")) {
+      if (this.at(TokenType.EOF)) {
+        throw new ParseError("Unterminated for-loop word list", this.peek());
+      }
+      words.push(this.tokenToCompoundWord(this.advance()));
+      this.skipNewlines();
+    }
+
+    this.expect(TokenType.Operator, ")");
+    return words;
+  }
+
+  /**
+   * The body, once the word list is read. Normally `do … done`; zsh also takes
+   * a single command in its place, whichever way the list was written, so
+   * `for x (a b) cmd` and `for x in a b<newline>cmd` both end up here. The short
+   * form means what the long one means, so both land on the same node.
+   */
+  private parseForBody(start: number, variables: string[], words: CompoundWord[] | null): ForClause {
+    if (this.dialect === "zsh" && !this.atWord("do")) {
+      const body = this.wrapScript([this.parseCommand()]);
+      const redirects = this.parseTrailingRedirects();
+      const last = redirects[redirects.length - 1];
+      return {
+        type: "ForClause",
+        variables,
+        words,
+        body,
+        redirects,
+        range: { start, end: last ? last.range.end : body.range.end },
+      };
+    }
+
     this.expectWord("do");
     this.skipNewlines();
     const body = this.wrapScript(this.parseCompoundList());
@@ -982,8 +1085,41 @@ export class Parser {
 
     return {
       type: "ForClause",
-      variable,
+      variables,
       words,
+      body,
+      redirects,
+      range: { start, end: redirects.length > 0 ? redirects[redirects.length - 1]!.range.end : end },
+    };
+  }
+
+  /**
+   * zsh's counted loop: `repeat 3 do … done`, or `repeat $n { … }`. The count is
+   * a word rather than a number, since the shell expands it first.
+   */
+  private parseRepeat(): RepeatClause {
+    const start = this.expect(TokenType.Keyword, "repeat").range.start;
+    const count = this.tokenToCompoundWord(this.advance());
+
+    if (this.atAny(TokenType.Operator, ";")) this.advance();
+    this.skipNewlines();
+
+    let body: Script;
+    let end: number;
+    if (this.atWord("do")) {
+      this.advance();
+      this.skipNewlines();
+      body = this.wrapScript(this.parseCompoundList());
+      end = this.expectWord("done").range.end;
+    } else {
+      body = this.wrapScript([this.parseCommand()]);
+      end = body.range.end;
+    }
+
+    const redirects = this.parseTrailingRedirects();
+    return {
+      type: "RepeatClause",
+      count,
       body,
       redirects,
       range: { start, end: redirects.length > 0 ? redirects[redirects.length - 1]!.range.end : end },
@@ -1377,6 +1513,7 @@ export class Parser {
       type: "FunctionDef",
       name: nameTok.value,
       body,
+      args: [],
       redirects,
       range: { start, end: redirects.length > 0 ? redirects[redirects.length - 1]!.range.end : body.range.end },
     };
@@ -1384,8 +1521,12 @@ export class Parser {
 
   private parseFunctionKeyword(): FunctionDef {
     const start = this.expect(TokenType.Keyword, "function").range.start;
-    const nameTok = this.expect(TokenType.Word);
-    this.definedFunctions.add(nameTok.value);
+
+    // zsh: `function { … }` defines nothing and runs the body at once, so there
+    // is no name to bind. Any words after the body are its positional arguments.
+    const anonymous = this.dialect === "zsh" && !this.at(TokenType.Word);
+    const nameTok = anonymous ? null : this.expect(TokenType.Word);
+    if (nameTok) this.definedFunctions.add(nameTok.value);
 
     // Optional ()
     if (this.atAny(TokenType.Operator, "(")) {
@@ -1395,15 +1536,27 @@ export class Parser {
 
     this.skipNewlines();
     const body = this.parseCommand();
+    const args = anonymous ? this.parseWordList() : [];
     const redirects = this.parseTrailingRedirects();
 
+    const last = redirects[redirects.length - 1] ?? args[args.length - 1];
     return {
       type: "FunctionDef",
-      name: nameTok.value,
+      name: nameTok?.value ?? null,
       body,
+      args,
       redirects,
-      range: { start, end: redirects.length > 0 ? redirects[redirects.length - 1]!.range.end : body.range.end },
+      range: { start, end: last ? last.range.end : body.range.end },
     };
+  }
+
+  /** Plain words up to the end of the command, for an anonymous function's args */
+  private parseWordList(): CompoundWord[] {
+    const words: CompoundWord[] = [];
+    while (this.at(TokenType.Word) || this.at(TokenType.Assignment)) {
+      words.push(this.tokenToCompoundWord(this.advance()));
+    }
+    return words;
   }
 
   private parseCoproc(): Coproc {
@@ -1615,6 +1768,32 @@ export class Parser {
             name += raw[i];
             i++;
           }
+
+          // zsh subscripts without braces: `$arg[2]` and the slice `$arg[0,1]`
+          // are the expansion, where bash would read a glob bracket after it
+          if (this.dialect === "zsh" && raw[i] === "[") {
+            const close = findBracketClose(raw, i);
+            if (close !== -1) {
+              name += raw.slice(i, close + 1);
+              i = close + 1;
+            }
+          }
+
+          parts.push({
+            type: "VariableExpansion",
+            expression: name,
+            braced: false,
+            quoted: quote,
+            range: at(start, i),
+          });
+        } else if (this.dialect === "zsh" && next === "#" && /[a-zA-Z_]/.test(raw[i + 2] ?? "")) {
+          // zsh: `$#arg` is the length of `arg`, not `$#` followed by a word
+          i += 2;
+          let name = "#";
+          while (i < raw.length && /[a-zA-Z0-9_]/.test(raw[i]!)) {
+            name += raw[i];
+            i++;
+          }
           parts.push({
             type: "VariableExpansion",
             expression: name,
@@ -1635,7 +1814,59 @@ export class Parser {
           addLiteral(ch, i);
           i++;
         }
-      } else if (quote === null && EXTGLOB_LEADS.includes(ch) && raw[i + 1] === "(") {
+      } else if (quote === null && this.dialect === "zsh" && ch === "(" && isQualifierGroup(raw, i)) {
+        // zsh glob qualifier: `bin(N)`, `*(-/FN)` — it selects among what the
+        // pattern matched rather than matching text of its own
+        flushLiteral(i);
+        const start = i;
+        const close = matchingParen(raw, i);
+        i = close;
+        parts.push({
+          type: "GlobPattern",
+          kind: "qualifier",
+          value: raw.slice(start, i),
+          qualifiers: raw.slice(start + 1, i - 1),
+          range: at(start, i),
+        });
+      } else if (quote === null && this.dialect === "zsh" && ch === "<" && readNumericRange(raw, i) !== null) {
+        // zsh numeric range: `<1->` matches a number, not a redirect
+        const parsed = readNumericRange(raw, i)!;
+        flushLiteral(i);
+        const start = i;
+        i = parsed.end;
+        parts.push({
+          type: "GlobPattern",
+          kind: "numeric-range",
+          value: raw.slice(start, i),
+          min: parsed.min,
+          max: parsed.max,
+          range: at(start, i),
+        });
+      } else if (quote === null && this.dialect === "zsh" && ch === "(" && matchingParen(raw, i) !== -1) {
+        // zsh bare group: `(a|b)` is what bash writes `@(a|b)`, so it carries
+        // no operator
+        flushLiteral(i);
+        const start = i;
+        const bodyStart = i + 1;
+        const close = matchingParen(raw, i);
+        const body = raw.slice(bodyStart, close - 1);
+        i = close;
+        parts.push({
+          type: "GlobPattern",
+          kind: "extended",
+          value: raw.slice(start, i),
+          op: null,
+          alternatives: splitAlternatives(body).map(alternative =>
+            this.rawToCompoundWord(
+              alternative.text,
+              at(bodyStart + alternative.offset, bodyStart + alternative.offset + alternative.text.length),
+              offset + bodyStart + alternative.offset,
+            ),
+          ),
+          range: at(start, i),
+        });
+      } else if (quote === null && EXTGLOB_LEADS.includes(ch) && raw[i + 1] === "(" &&
+                 !(this.dialect === "zsh" && isQualifierGroup(raw, i + 1))) {
         // Extended glob: ?(a|b), *(…), +(…), @(…), !(…)
         flushLiteral(i);
         const start = i;
@@ -1769,7 +2000,10 @@ export class Parser {
    * absolute source offset the body started at.
    */
   private parseSubstitution(body: string, offset: number): Script {
-    const script = new Parser(tokenize(body)).parse();
+    // The dialect carries into the substitution: `$(…)` inside a zsh script is
+    // still zsh
+    const options = { dialect: this.dialect };
+    const script = new Parser(tokenize(body, options), options).parse();
     shiftRanges(script, offset);
     return script;
   }
@@ -1793,6 +2027,6 @@ export class Parser {
   }
 }
 
-export function parse(tokens: Token[]): Script {
-  return new Parser(tokens).parse();
+export function parse(tokens: Token[], options: ParseOptions = {}): Script {
+  return new Parser(tokens, options).parse();
 }

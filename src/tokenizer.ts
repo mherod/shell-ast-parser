@@ -1,4 +1,5 @@
 import { parseArithmetic } from "./arithmetic.ts";
+import type { Dialect, ParseOptions } from "./ast.ts";
 
 export enum TokenType {
   /** A bare or quoted word / argument */
@@ -154,7 +155,7 @@ export function splitArithmeticClauses(text: string): { text: string; offset: nu
  * there is none. Shared by the arithmetic parser's two callers so both agree on
  * where an operand ends.
  */
-export function readExpansionExtent(text: string, pos: number): number | null {
+export function readExpansionExtent(text: string, pos: number, dialect: Dialect = "bash"): number | null {
   if (text[pos] === "`") {
     const close = text.indexOf("`", pos + 1);
     return close === -1 ? text.length : close + 1;
@@ -178,6 +179,13 @@ export function readExpansionExtent(text: string, pos: number): number | null {
 
   if (next !== undefined && /[a-zA-Z_]/.test(next)) {
     let end = pos + 1;
+    while (end < text.length && /[a-zA-Z0-9_]/.test(text[end]!)) end++;
+    return end;
+  }
+
+  // zsh: `$#arg` is the length of `arg`, where bash reads `$#` and then a word
+  if (dialect === "zsh" && next === "#" && /[a-zA-Z_]/.test(text[pos + 2] ?? "")) {
+    let end = pos + 2;
     while (end < text.length && /[a-zA-Z0-9_]/.test(text[end]!)) end++;
     return end;
   }
@@ -265,6 +273,9 @@ export class Tokenizer {
   private inTestCommand: boolean = false;
   /** Whether the next word is the regex operand of `=~` */
   private afterRegexOperator: boolean = false;
+  /** Whether the next word is the pattern operand of `==` or `!=` (zsh) */
+  private afterPatternOperator: boolean = false;
+  private dialect: Dialect;
   /**
    * Functions defined so far. A function shadows a builtin of the same name
    * only once its definition has run, so a single forward pass matches the
@@ -283,8 +294,9 @@ export class Tokenizer {
     if (value) this.inDeclarationCommand = false;
   }
 
-  constructor(src: string) {
+  constructor(src: string, options: ParseOptions = {}) {
     this.src = src;
+    this.dialect = options.dialect ?? "bash";
   }
 
   tokenize(): Token[] {
@@ -320,9 +332,11 @@ export class Tokenizer {
       }
 
       // The operand of `=~` is a regex, so `(`, `)` and `|` belong to it rather
-      // than to the surrounding test expression
-      if (this.afterRegexOperator) {
+      // than to the surrounding test expression. In zsh the operand of `==` is
+      // a glob pattern and groups the same way, so it is read whole too.
+      if (this.afterRegexOperator || this.afterPatternOperator) {
         this.afterRegexOperator = false;
+        this.afterPatternOperator = false;
         if (!this.src.startsWith("]]", this.pos)) {
           this.readRegexWord();
           continue;
@@ -419,7 +433,14 @@ export class Tokenizer {
   }
 
   private skipWhitespace(): void {
-    while (this.pos < this.src.length && isWhitespace(this.src[this.pos]!)) {
+    while (this.pos < this.src.length) {
+      // A backslash-newline is a line continuation. The shell removes it before
+      // parsing, so no token stands for it and the line it joins reads as one.
+      if (this.src[this.pos] === "\\" && this.src[this.pos + 1] === "\n") {
+        this.pos += 2;
+        continue;
+      }
+      if (!isWhitespace(this.src[this.pos]!)) break;
       this.pos++;
     }
   }
@@ -604,6 +625,13 @@ export class Tokenizer {
       const ch = this.src[this.pos]!;
 
       if (ch === "\\") {
+        // A continuation joins the word to the next line and contributes
+        // nothing to it: `PATH=/a\<newline>/b` is one value
+        if (this.src[this.pos + 1] === "\n") {
+          this.pos += 2;
+          continue;
+        }
+
         // Escape: take next char literally
         value += ch;
         this.pos++;
@@ -690,6 +718,16 @@ export class Tokenizer {
         continue;
       }
 
+      // zsh: a `(…)` that closes a word is a glob qualifier — `bin(N)`,
+      // `functions(-/FN)` — and belongs to it. An empty group is the `()` of a
+      // function definition, and a trailing `=` opens an array literal, so
+      // neither is absorbed.
+      if (this.dialect === "zsh" && ch === "(" && this.pos > start &&
+          !value.endsWith("=") && this.qualifierGroupLength() > 0) {
+        value += this.readParenGroup(false);
+        continue;
+      }
+
       if (!isWordChar(ch)) break;
 
       if (ch === "=" && !hasEquals) {
@@ -715,8 +753,9 @@ export class Tokenizer {
       return;
     }
 
-    // Determine if this is a keyword, assignment, or word
-    if (this.atCommandStart && KEYWORDS.has(value)) {
+    // Determine if this is a keyword, assignment, or word. `repeat` is a
+    // keyword only in zsh; in bash it is an ordinary command name.
+    if (this.atCommandStart && (KEYWORDS.has(value) || (this.dialect === "zsh" && value === "repeat"))) {
       this.tokens.push({
         type: TokenType.Keyword,
         value,
@@ -761,6 +800,11 @@ export class Tokenizer {
     if (this.inTestCommand && value === "=~") {
       this.afterRegexOperator = true;
     }
+    // zsh compares with a glob pattern here, where `(a|b)` groups and `<1->`
+    // is a number rather than a redirect
+    if (this.dialect === "zsh" && this.inTestCommand && (value === "==" || value === "!=" || value === "=")) {
+      this.afterPatternOperator = true;
+    }
   }
 
   /**
@@ -795,6 +839,30 @@ export class Tokenizer {
       range: { start, end: this.pos },
     });
     this.atCommandStart = false;
+  }
+
+  /**
+   * Length of the `(…)` group at the cursor when it could be a glob qualifier:
+   * one line, balanced, and no `$(` or backtick inside, since a substitution
+   * there means the parens are shell code rather than qualifier characters.
+   * Returns 0 when it does not qualify.
+   */
+  private qualifierGroupLength(): number {
+    let depth = 0;
+
+    for (let i = this.pos; i < this.src.length; i++) {
+      const ch = this.src[i]!;
+      if (ch === "\n" || ch === "`") return 0;
+      if (ch === "$" && this.src[i + 1] === "(") return 0;
+
+      if (ch === "(") depth++;
+      else if (ch === ")") {
+        depth--;
+        if (depth === 0) return i - this.pos - 1;
+      }
+    }
+
+    return 0;
   }
 
   /**
@@ -836,7 +904,7 @@ export class Tokenizer {
     // A placeholder part is enough here: this only asks "is this arithmetic?",
     // and the parser re-parses the text with real expansion handling.
     const fits = (text: string) => parseArithmetic(text, 0, (raw, pos) => {
-      const extent = readExpansionExtent(raw, pos);
+      const extent = readExpansionExtent(raw, pos, this.dialect);
       return extent === null
         ? null
         : { part: { type: "Word", value: raw.slice(pos, extent), quoted: null, range: { start: pos, end: extent } }, next: extent };
@@ -1007,6 +1075,6 @@ export class Tokenizer {
   }
 }
 
-export function tokenize(src: string): Token[] {
-  return new Tokenizer(src).tokenize();
+export function tokenize(src: string, options: ParseOptions = {}): Token[] {
+  return new Tokenizer(src, options).tokenize();
 }

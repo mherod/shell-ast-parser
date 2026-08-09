@@ -4,6 +4,19 @@ export interface Range {
   end: number;
 }
 
+/**
+ * Which shell's grammar to read the source as. "bash" also covers sh and is
+ * the default: it rejects zsh-only syntax rather than guessing at a meaning
+ * bash would not give it. "zsh" additionally accepts glob qualifiers, bare
+ * pattern groups, numeric ranges, anonymous functions and the short for-loop.
+ */
+export type Dialect = "bash" | "zsh";
+
+export interface ParseOptions {
+  /** defaults to "bash" */
+  dialect?: Dialect;
+}
+
 // ── Leaf / atom nodes ──────────────────────────────────────────────
 
 /**
@@ -189,19 +202,58 @@ export interface GlobBracket {
  * An extended glob: `?(…)`, `*(…)`, `+(…)`, `@(…)`, `!(…)`. Alternatives are
  * words in their own right, so `@($x|b)` keeps its expansion and `@(a|@(b|c))`
  * nests.
+ *
+ * In the zsh dialect a group may carry no operator at all — `(a|b)` matches
+ * what bash writes as `@(a|b)` — and `op` is then null.
  */
 export interface GlobExtended {
   type: "GlobPattern";
   kind: "extended";
   /** the pattern as written, operator and parens included */
   value: string;
-  op: "?" | "*" | "+" | "@" | "!";
+  /** null for a bare zsh group, which behaves as `@(…)` */
+  op: "?" | "*" | "+" | "@" | "!" | null;
   alternatives: CompoundWord[];
   range: Range;
 }
 
+/**
+ * zsh only. A numeric range: `<1->` is one and up, `<-9>` is up to nine,
+ * `<1-9>` is bounded, and `<->` is any number. An open end is null.
+ */
+export interface GlobNumericRange {
+  type: "GlobPattern";
+  kind: "numeric-range";
+  /** the pattern as written, angle brackets included */
+  value: string;
+  min: number | null;
+  max: number | null;
+  range: Range;
+}
+
+/**
+ * zsh only. The qualifier group that may close a pattern — `*(.)` for plain
+ * files, `*(-/FN)` for a non-empty directory following symlinks. It selects
+ * among what the pattern matched rather than matching text itself, so it is
+ * kept as written; deciding what it selects needs a filesystem.
+ */
+export interface GlobQualifier {
+  type: "GlobPattern";
+  kind: "qualifier";
+  /** the group as written, parens included */
+  value: string;
+  /** the qualifier characters alone, without the parens */
+  qualifiers: string;
+  range: Range;
+}
+
 /** Discriminate on `kind`; every variant keeps `value` as written */
-export type GlobPattern = GlobWildcard | GlobBracket | GlobExtended;
+export type GlobPattern =
+  | GlobWildcard
+  | GlobBracket
+  | GlobExtended
+  | GlobNumericRange
+  | GlobQualifier;
 
 export interface Comment {
   type: "Comment";
@@ -337,7 +389,11 @@ export interface IfClause {
 
 export interface ForClause {
   type: "ForClause";
-  variable: string;
+  /**
+   * The loop variables. Always one in bash; zsh takes several and deals the
+   * words out between them, so `for k v in a b c d` runs twice.
+   */
+  variables: string[];
   words: CompoundWord[] | null;
   body: Script;
   redirects: Redirect[];
@@ -590,6 +646,16 @@ export interface WhileClause {
   range: Range;
 }
 
+/** zsh only. `repeat 3 do … done` runs the body a counted number of times. */
+export interface RepeatClause {
+  type: "RepeatClause";
+  /** how many times, as a word — it is expanded, so it need not be a literal */
+  count: CompoundWord;
+  body: Script;
+  redirects: Redirect[];
+  range: Range;
+}
+
 export interface UntilClause {
   type: "UntilClause";
   condition: Script;
@@ -620,8 +686,11 @@ export interface CaseClause {
 
 export interface FunctionDef {
   type: "FunctionDef";
-  name: string;
+  /** null for a zsh anonymous function, `function { … }`, which runs at once */
+  name: string | null;
   body: Command;
+  /** words passed to an anonymous function; empty for a named one */
+  args: CompoundWord[];
   redirects: Redirect[];
   range: Range;
 }
@@ -642,6 +711,7 @@ export type CompoundCommand =
   | ArithmeticForClause
   | WhileClause
   | UntilClause
+  | RepeatClause
   | CaseClause
   | ArithmeticCommand
   | Subshell

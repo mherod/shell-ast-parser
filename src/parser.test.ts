@@ -76,7 +76,7 @@ fi
     const pipeline = script.commands[0]! as any;
     const forCmd = pipeline.commands[0];
     expect(forCmd.type).toBe("ForClause");
-    expect(forCmd.variable).toBe("i");
+    expect(forCmd.variables).toEqual(["i"]);
     expect(forCmd.words!.length).toBe(3);
   });
 
@@ -1107,7 +1107,7 @@ describe("C-style for loops", () => {
   test("a classic for loop is unaffected", () => {
     const loop = first("for i in 1 2; do :; done");
     expect(loop.type).toBe("ForClause");
-    expect(loop.variable).toBe("i");
+    expect(loop.variables).toEqual(["i"]);
   });
 });
 
@@ -1737,6 +1737,154 @@ describe("fixture: sample.sh", () => {
     const src = await Bun.file("fixtures/sample.sh").text();
     const script = parseShell(src);
     expect(script.comments.length).toBeGreaterThan(5);
+  });
+});
+
+describe("the zsh dialect", () => {
+  const zsh = (src: string) => parseShell(src, { dialect: "zsh" });
+  const first = (src: string) => (zsh(src).commands[0] as any).commands[0];
+
+  /** Every zsh-only construct must still be refused when reading bash */
+  const ZSH_ONLY = [
+    "function {\n  echo hi\n}",
+    'for x ("$a[@]") echo $x',
+    "for k v in a b; do :; done",
+    "repeat 3 do echo hi; done",
+    "[[ $x == (a|b) ]]",
+    "[[ $v == <1-> ]]",
+    "X=($HOME/bin(N) $X)",
+  ];
+
+  test("bash refuses what only zsh accepts", () => {
+    for (const src of ZSH_ONLY) {
+      expect(() => parseShell(src, { dialect: "bash" })).toThrow(ParseError);
+      expect(() => parseShell(src, { dialect: "zsh" })).not.toThrow();
+    }
+  });
+
+  test("the default dialect is bash", () => {
+    expect(() => parseShell("[[ $v == <1-> ]]")).toThrow(ParseError);
+  });
+
+  test("an anonymous function has no name and may take arguments", () => {
+    expect(first("function {\n  echo hi\n}").name).toBeNull();
+
+    const withArgs = first("function {\n  echo $1\n} a b");
+    expect(withArgs.name).toBeNull();
+    expect(withArgs.args.length).toBe(2);
+  });
+
+  test("a named function is unaffected", () => {
+    expect(first("function f {\n  echo hi\n}").name).toBe("f");
+    expect(first("f() { echo hi; }").args).toEqual([]);
+  });
+
+  test("the short for-loop means what the long one means", () => {
+    for (const src of ['for x (a b) echo $x', 'for x (a b) { echo $x }', 'for x (a b); do echo $x; done']) {
+      const loop = first(src);
+      expect(loop.type).toBe("ForClause");
+      expect(loop.variables).toEqual(["x"]);
+      expect(loop.words.length).toBe(2);
+    }
+  });
+
+  test("a for-loop body may be a single command after `in`", () => {
+    const loop = first("for key in a b\n  bindkey $key\n");
+    expect(loop.type).toBe("ForClause");
+    expect(loop.body.commands.length).toBe(1);
+  });
+
+  test("a for-loop deals its words out between several variables", () => {
+    expect(first("for k v in a b c d; do :; done").variables).toEqual(["k", "v"]);
+  });
+
+  test("repeat counts with a word, since the shell expands it", () => {
+    const loop = first("repeat $n do echo hi; done");
+    expect(loop.type).toBe("RepeatClause");
+    expect(loop.count.parts[0].type).toBe("VariableExpansion");
+  });
+
+  test("repeat is an ordinary command name in bash", () => {
+    const cmd = (parseShell("repeat 3", { dialect: "bash" }).commands[0] as any).commands[0];
+    expect(cmd.type).toBe("SimpleCommand");
+  });
+
+  test("a glob qualifier closes the pattern it selects from", () => {
+    const parts = first("print *(.)").args[0].parts;
+    expect(parts.map((p: any) => p.kind)).toEqual(["wildcard", "qualifier"]);
+    expect(parts[1].qualifiers).toBe(".");
+  });
+
+  test("a qualifier is told from a group by what precedes it", () => {
+    // nothing before it, so this is a pattern group rather than a qualifier
+    expect(first("[[ $x == (a|b) ]]").expression.right.parts[0].op).toBeNull();
+    // `bin` precedes it, so it selects among the matches
+    const value = first("X=($HOME/bin(N))").assignments[0].value;
+    expect(value.elements[0].parts[2].kind).toBe("qualifier");
+  });
+
+  test("a function definition's empty parens are not a qualifier", () => {
+    expect(first("f() { echo hi; }").type).toBe("FunctionDef");
+  });
+
+  test("an array literal is not a qualifier", () => {
+    const value = first("X=(a b)").assignments[0].value;
+    expect(value.type).toBe("ArrayLiteral");
+    expect(value.elements.length).toBe(2);
+  });
+
+  test("a numeric range keeps its open ends", () => {
+    const range = first("[[ $v == <1-> ]]").expression.right.parts[0];
+    expect(range.kind).toBe("numeric-range");
+    expect(range.min).toBe(1);
+    expect(range.max).toBeNull();
+  });
+
+  test("a pattern nests ranges inside its alternatives", () => {
+    const group = first("[[ $ZSH_VERSION == (5.<1->*|<6->.*) ]]").expression.right.parts[0];
+    expect(group.op).toBeNull();
+    expect(group.alternatives.length).toBe(2);
+    expect(group.alternatives[0].parts.map((p: any) => p.kind ?? p.type))
+      .toEqual(["Word", "numeric-range", "wildcard"]);
+  });
+
+  test("a subscript without braces belongs to the expansion", () => {
+    const parts = first("echo $arg[0,1]").args[0].parts;
+    expect(parts.length).toBe(1);
+    expect(parts[0].type).toBe("VariableExpansion");
+    expect(parts[0].expression).toBe("arg[0,1]");
+  });
+
+  test("$#arr is a length, not $# and a word", () => {
+    const parts = first("echo $#arg").args[0].parts;
+    expect(parts.length).toBe(1);
+    expect(parts[0].expression).toBe("#arg");
+  });
+});
+
+describe("line continuations", () => {
+  // A backslash-newline is removed before parsing, so it contributes no token.
+  // It used to arrive as a Word, which quietly added an argument to a command
+  // and broke every condition or loop header split across lines.
+  test("a continuation joins lines without leaving a word behind", () => {
+    const cmd = (parseShell("echo one \\\n  two").commands[0] as any).commands[0];
+    expect(cmd.args.length).toBe(2);
+  });
+
+  test("a condition may be split with a backslash", () => {
+    const cmd = (parseShell("[[ -n $A \\\n  && -n $B ]]").commands[0] as any).commands[0];
+    expect(cmd.expression.type).toBe("TestLogical");
+  });
+
+  test("a loop header may be split with a backslash", () => {
+    const loop = (parseShell("for x \\\n  in a b; do :; done").commands[0] as any).commands[0];
+    expect(loop.variables).toEqual(["x"]);
+    expect(loop.words.length).toBe(2);
+  });
+
+  test("a continuation inside a word joins it", () => {
+    const cmd = (parseShell("echo /a\\\n/b").commands[0] as any).commands[0];
+    expect(cmd.args[0].parts[0].value).toBe("/a/b");
   });
 });
 
