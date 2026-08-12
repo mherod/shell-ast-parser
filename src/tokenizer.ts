@@ -28,6 +28,13 @@ export interface Token {
   type: TokenType;
   value: string;
   range: { start: number; end: number };
+  /**
+   * Value indexes where a line continuation was dropped. Each entry marks a
+   * backslash-newline pair present in the source but not in `value`, so a
+   * character at or past it sits two further right in the source per entry.
+   * Absent when value and source agree, which is nearly always.
+   */
+  joins?: number[];
 }
 
 const KEYWORDS = new Set([
@@ -668,14 +675,18 @@ export class Tokenizer {
     let value = "";
     let hasEquals = false;
     let equalsPos = -1;
+    const joins: number[] = [];
 
     while (this.pos < this.src.length) {
       const ch = this.src[this.pos]!;
 
       if (ch === "\\") {
         // A continuation joins the word to the next line and contributes
-        // nothing to it: `PATH=/a\<newline>/b` is one value
+        // nothing to it: `PATH=/a\<newline>/b` is one value. The parser still
+        // needs to know where the two characters went, or every offset it
+        // computes past this point lands two short of the source.
         if (this.src[this.pos + 1] === "\n") {
+          joins.push(value.length);
           this.pos += 2;
           continue;
         }
@@ -844,6 +855,7 @@ export class Tokenizer {
           type: TokenType.Assignment,
           value,
           range: { start, end: this.pos },
+          ...(joins.length > 0 ? { joins } : {}),
         });
         return;
       }
@@ -855,6 +867,7 @@ export class Tokenizer {
       type: TokenType.Word,
       value,
       range: { start, end: this.pos },
+      ...(joins.length > 0 ? { joins } : {}),
     });
     this.atCommandStart = false;
 

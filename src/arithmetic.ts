@@ -89,6 +89,10 @@ function lex(text: string, readExpansion: ExpansionReader): Tok[] {
 
     if (ch === " " || ch === "\t" || ch === "\n") { i++; continue; }
 
+    // A line continuation: the shell joins the lines before arithmetic ever
+    // sees them, so the pair is whitespace here — `$((1\<newline>+2))` is 3
+    if (ch === "\\" && text[i + 1] === "\n") { i += 2; continue; }
+
     if (ch === "$" || ch === "`") {
       const expansion = readExpansion(text, i);
       if (!expansion) throw new ArithmeticSyntaxError(`Unreadable expansion at ${i}`);

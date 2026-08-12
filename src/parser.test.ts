@@ -2168,6 +2168,67 @@ describe("line continuations", () => {
     const cmd = (parseShell("echo /a\\\n/b").commands[0] as any).commands[0];
     expect(cmd.args[0].parts[0].value).toBe("/a/b");
   });
+
+  // The tokenizer drops the two continuation characters from a token's value
+  // while the range still spans them, so any part offset computed as
+  // range.start + index drifted two right per continuation — the same defect
+  // the backtick position map fixed. The README's promise is the oracle here:
+  // src.slice(part.range.start, part.range.end) is that part's text.
+  test("a part after an in-word continuation still indexes the source", () => {
+    const src = "echo ab\\\ncd$HOME";
+    const parts = (parseShell(src).commands[0] as any).commands[0].args[0].parts;
+    expect(parts[0].value).toBe("abcd");
+    expect(src.slice(parts[1].range.start, parts[1].range.end)).toBe("$HOME");
+  });
+
+  test("an assignment value's parts survive a continuation", () => {
+    const src = "X=/a\\\n/b$HOME";
+    const assignment = (parseShell(src).commands[0] as any).commands[0].assignments[0];
+    const expansion = assignment.value.parts[1];
+    expect(src.slice(expansion.range.start, expansion.range.end)).toBe("$HOME");
+  });
+
+  test("a substitution body after a continuation still indexes the source", () => {
+    const src = "echo ab\\\ncd$(date)";
+    const sub = (parseShell(src).commands[0] as any).commands[0].args[0].parts[1];
+    expect(sub.type).toBe("CommandSubstitution");
+    expect(src.slice(sub.body.range.start, sub.body.range.end)).toBe("date");
+  });
+
+  test("a continuation joins inside double quotes too", () => {
+    // bash -c 'echo "a\<newline>b"' prints ab, not a<newline>b
+    const cmd = (parseShell('echo "a\\\nb"').commands[0] as any).commands[0];
+    expect(cmd.args[0].parts[0].value).toBe("ab");
+  });
+
+  test("arithmetic joins a continuation like the shell does", () => {
+    // bash -c 'echo $((1\<newline>+2))' prints 3
+    const expansion = (parseShell("echo $((1\\\n+2))").commands[0] as any).commands[0].args[0].parts[0];
+    expect(expansion.parsed).not.toBeNull();
+    expect(expansion.parsed.op).toBe("+");
+  });
+
+  test("(( )) split by a continuation is arithmetic, not subshells", () => {
+    // bash -c '((x=1\<newline>+2)); echo $x' prints 3
+    const cmd = (parseShell("((x=1\\\n+2))").commands[0] as any).commands[0];
+    expect(cmd.type).toBe("ArithmeticCommand");
+    expect(cmd.parsed).not.toBeNull();
+  });
+
+  test("a let operand's ranges survive a continuation", () => {
+    const src = "let x=1\\\n+2";
+    const expr = (parseShell(src).commands[0] as any).commands[0].expressions[0];
+    const two = expr.parsed.value.right;
+    expect(src.slice(two.range.start, two.range.end)).toBe("2");
+  });
+
+  test("a regex operand joins a continuation", () => {
+    // bash -c 's=ab; [[ $s =~ a\<newline>b ]] && echo yes' prints yes
+    const regex = (parseShell("[[ $s =~ a\\\nb$v ]]").commands[0] as any).commands[0].expression.regex;
+    expect(JSON.stringify(regex)).not.toContain("RegexEscape");
+    expect(regex.items[0].value).toBe("a");
+    expect(regex.items[1].value).toBe("b");
+  });
 });
 
 describe("a parse covers the whole source", () => {

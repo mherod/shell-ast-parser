@@ -52,6 +52,12 @@ class RegexParser {
     const items: RegexNode[] = [];
 
     while (this.pos < this.text.length && this.text[this.pos] !== "|" && this.text[this.pos] !== ")") {
+      // A line continuation, joined away by the shell before the regex runs —
+      // not an escaped newline
+      if (this.text[this.pos] === "\\" && this.text[this.pos + 1] === "\n") {
+        this.pos += 2;
+        continue;
+      }
       items.push(this.parseQuantified());
     }
 
@@ -164,12 +170,19 @@ class RegexParser {
       };
     }
 
-    // A quoted run is matched literally, however much regex syntax it contains
+    // A quoted run is matched literally, however much regex syntax it contains.
+    // The shell joins a continuation inside double quotes (not single) before
+    // matching, so it drops out of the literal.
     if (ch === "'" || ch === '"') {
       const close = this.text.indexOf(ch, start + 1);
       const end = close === -1 ? this.text.length : close;
       this.pos = close === -1 ? this.text.length : close + 1;
-      return { type: "RegexLiteral", value: this.text.slice(start + 1, end), range: this.range(start, this.pos) };
+      const run = this.text.slice(start + 1, end);
+      return {
+        type: "RegexLiteral",
+        value: ch === '"' ? run.replaceAll("\\\n", "") : run,
+        range: this.range(start, this.pos),
+      };
     }
 
     if (ch === "$" || ch === "`") {
