@@ -199,13 +199,18 @@ function splitAlternatives(text: string): { text: string; offset: number }[] {
   return alternatives;
 }
 
-/** Index just past the `)` matching the `(` at `open`, or -1 if unbalanced */
+/**
+ * Index just past the `)` matching the `(` at `open`, or -1 if unbalanced.
+ * Quoted spans are skipped whole, as the tokenizer skipped them when it read
+ * the word — `("a)b"|c)` closes at the last paren, not the quoted one.
+ */
 function matchingParen(raw: string, open: number): number {
   let depth = 0;
 
   for (let i = open; i < raw.length; i++) {
     const ch = raw[i]!;
     if (ch === "\\") { i++; continue; }
+    if (ch === "'" || ch === '"') { i = skipQuoted(raw, i) - 1; continue; }
     if (ch === "(") depth++;
     else if (ch === ")") {
       depth--;
@@ -349,8 +354,12 @@ function startsWord(raw: string, pos: number, regionStart: number): boolean {
  * where `#` opens a comment and `<<` opens a heredoc whose body must be stepped
  * over. It stays off for `${ }`, where `#` is the length and prefix-strip
  * operator, and for arithmetic.
+ *
+ * `nestLoneBraces` is zsh's unquoted `${…}`, where every `{` deepens the scan;
+ * bash counts only `${`, so its expansions end at the first unmatched `}` —
+ * the same rule the tokenizer applied when it read the word.
  */
-function readDelimited(raw: string, open: number, openCh: string, closeCh: string, depth: number = 1, shellCode: boolean = false): { body: string; next: number } {
+function readDelimited(raw: string, open: number, openCh: string, closeCh: string, depth: number = 1, shellCode: boolean = false, nestLoneBraces: boolean = false): { body: string; next: number } {
   const extraClosers = depth - 1;
   const start = open + 1;
   const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
@@ -382,7 +391,7 @@ function readDelimited(raw: string, open: number, openCh: string, closeCh: strin
       continue;
     }
 
-    if (ch === openCh) depth++;
+    if (ch === openCh && (openCh !== "{" || nestLoneBraces || raw[i - 1] === "$")) depth++;
     else if (ch === closeCh) {
       depth--;
       if (depth === 0) break;
@@ -1964,8 +1973,9 @@ export class Parser {
         const start = i;
 
         if (next === "{") {
-          // ${...}
-          const { body: expr, next: after } = readDelimited(raw, i + 1, "{", "}");
+          // ${...} — unquoted, zsh nests lone braces; bash never does
+          const { body: expr, next: after } =
+            readDelimited(raw, i + 1, "{", "}", 1, false, this.dialect === "zsh" && quote === null);
           i = after;
           parts.push({
             type: "VariableExpansion",
@@ -2242,7 +2252,7 @@ export class Parser {
   /** Parse the operand of `=~` as an extended regular expression */
   private parseRegexText(text: string, offset: number): RegexNode | null {
     return parseRegex(text, offset, {
-      readExpansion: (raw, pos) => this.readExpansionPart(raw, pos, offset),
+      readExpansion: (raw, pos) => this.readExpansionPart(raw, pos, offset, this.dialect === "zsh"),
       readBracket: (raw, pos) => {
         const close = findBracketClose(raw, pos);
         if (close === -1) return null;
@@ -2258,9 +2268,15 @@ export class Parser {
     });
   }
 
-  /** Resolve a `$…` expansion inside embedded syntax into a real word part */
-  private readExpansionPart(raw: string, pos: number, offset: number): { part: WordPart; next: number } | null {
-    const extent = readExpansionExtent(raw, pos, this.dialect);
+  /**
+   * Resolve a `$…` expansion inside embedded syntax into a real word part.
+   *
+   * `nestLoneBraces` follows the context: a regex operand is a word, where
+   * zsh runs `${x:-{}}` to the second brace, while arithmetic ends the
+   * expansion at the first `}` in both dialects.
+   */
+  private readExpansionPart(raw: string, pos: number, offset: number, nestLoneBraces: boolean = false): { part: WordPart; next: number } | null {
+    const extent = readExpansionExtent(raw, pos, this.dialect, nestLoneBraces);
     if (extent === null) return null;
 
     const range = { start: offset + pos, end: offset + extent };

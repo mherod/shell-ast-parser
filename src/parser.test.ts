@@ -2231,6 +2231,74 @@ describe("line continuations", () => {
   });
 });
 
+describe("the closing brace of an expansion", () => {
+  const zsh = (src: string) => parseShell(src, { dialect: "zsh" });
+  const first = (src: string) => (zsh(src).commands[0] as any).commands[0];
+
+  test("bash closes at the first unquoted }", () => {
+    // bash -c 'y=Q; [[ "Qc}" =~ ^${y:-a{b}c}$ ]]' matches: the default value is
+    // a{b, and c} is literal text outside the expansion
+    const parts = (parseShell("echo ${x:-a{b}c}").commands[0] as any).commands[0].args[0].parts;
+    expect(parts[0].expression).toBe("x:-a{b");
+    expect(parts[1].value).toBe("c}");
+  });
+
+  test("zsh nests braces in an unquoted expansion", () => {
+    // zsh -c 'y=Q; [[ "Q" =~ ^${y:-a{ }b}$ ]]' matches: the whole braced run
+    // is the default value
+    const parts = first("echo ${x:-a{b}c}").args[0].parts;
+    expect(parts.length).toBe(1);
+    expect(parts[0].expression).toBe("x:-a{b}c");
+  });
+
+  test("zsh inside double quotes closes like bash", () => {
+    // zsh -c 'x=v; printf "[%s]\n" "${x:-{}}"' prints [v}]
+    const parts = first('echo "${x:-a{b}c}"').args[0].parts;
+    expect(parts[0].expression).toBe("x:-a{b");
+  });
+
+  test("a zsh word swallows a space inside nested braces", () => {
+    // zsh -c 'x=v; printf "[%s]\n" ${x:-{ } q}' prints [v] — one argument —
+    // where bash prints [v] and [q}], two
+    const cmd = first("printf %s ${x:-{ } q}");
+    expect(cmd.args.length).toBe(2);
+    expect(cmd.args[1].parts[0].expression).toBe("x:-{ } q");
+
+    const bashCmd = (parseShell("printf %s ${x:-{ } q}").commands[0] as any).commands[0];
+    expect(bashCmd.args.length).toBe(3);
+    expect(bashCmd.args[1].parts[0].expression).toBe("x:-{ ");
+    expect(bashCmd.args[2].parts[0].value).toBe("q}");
+  });
+
+  test("arithmetic closes at the first } in both dialects", () => {
+    // bash and zsh both reject $(( ${x:-{}} + 1 )): the expansion ends at the
+    // first }, and the one left over is no arithmetic operator
+    for (const dialect of ["bash", "zsh"] as const) {
+      const expansion = (parseShell("echo $(( ${x:-{}} + 1 ))", { dialect }).commands[0] as any)
+        .commands[0].args[0].parts[0];
+      expect(expansion.parsed).toBeNull();
+    }
+  });
+
+  test("a regex operand follows its dialect", () => {
+    const src = "[[ $s =~ ^${y:-a{b}c}$ ]]";
+    const expansionIn = (regex: any) => regex.items.find((i: any) => i.type === "RegexExpansion");
+
+    const bashRegex = (parseShell(src).commands[0] as any).commands[0].expression.regex;
+    expect(expansionIn(bashRegex).part.expression).toBe("y:-a{b");
+
+    const zshRegex = first(src).expression.regex;
+    expect(expansionIn(zshRegex).part.expression).toBe("y:-a{b}c");
+  });
+
+  test("a quoted ) does not close a zsh pattern group", () => {
+    // zsh -c 'x="a)b"; [[ $x == ("a)b"|c) ]] && echo yes' prints yes
+    const group = first('[[ $x == ("a)b"|c) ]]').expression.right.parts[0];
+    expect(group.alternatives.length).toBe(2);
+    expect(group.alternatives[0].parts[0].value).toBe("a)b");
+  });
+});
+
 describe("a parse covers the whole source", () => {
   // A terminator that closes nothing used to end the top-level list quietly,
   // so everything past it vanished from a Script that looked complete. For a

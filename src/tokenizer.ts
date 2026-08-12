@@ -107,8 +107,12 @@ function skipQuotedIn(text: string, pos: number): number {
  * Index just past the delimiter matching the one at `open`, or -1 when it is
  * unbalanced. Quoted spans are skipped whole. `depth` above 1 is for openers
  * spelled with repeated delimiters, like `((`.
+ *
+ * `nestLoneBraces` decides whether a bare `{` deepens a `${…}` scan. Off, only
+ * `${` nests and the first unmatched `}` closes — how bash reads an expansion
+ * everywhere, and both shells read one in arithmetic.
  */
-function matchDelimiter(text: string, open: number, openCh: string, closeCh: string, depth: number = 1): number {
+function matchDelimiter(text: string, open: number, openCh: string, closeCh: string, depth: number = 1, nestLoneBraces: boolean = true): number {
   let i = open + 1;
 
   while (i < text.length) {
@@ -117,7 +121,7 @@ function matchDelimiter(text: string, open: number, openCh: string, closeCh: str
     if (ch === "\\") { i += 2; continue; }
     if (ch === "'" || ch === '"') { i = skipQuotedIn(text, i); continue; }
 
-    if (ch === openCh) depth++;
+    if (ch === openCh && (openCh !== "{" || nestLoneBraces || text[i - 1] === "$")) depth++;
     else if (ch === closeCh) {
       depth--;
       if (depth === 0) return i + 1;
@@ -161,8 +165,12 @@ export function splitArithmeticClauses(text: string): { text: string; offset: nu
  * Extent of the `$…` or backtick expansion starting at `pos`, or null when
  * there is none. Shared by the arithmetic parser's two callers so both agree on
  * where an operand ends.
+ *
+ * `nestLoneBraces` is zsh's word-context rule, where `${x:-{}}` runs to the
+ * second brace. It stays off for arithmetic, where both shells end the
+ * expansion at the first `}` — `$(( ${x:-{}} ))` is an error in each.
  */
-export function readExpansionExtent(text: string, pos: number, dialect: Dialect = "bash"): number | null {
+export function readExpansionExtent(text: string, pos: number, dialect: Dialect = "bash", nestLoneBraces: boolean = false): number | null {
   if (text[pos] === "`") {
     const close = text.indexOf("`", pos + 1);
     return close === -1 ? text.length : close + 1;
@@ -172,7 +180,7 @@ export function readExpansionExtent(text: string, pos: number, dialect: Dialect 
   const next = text[pos + 1];
 
   if (next === "{") {
-    const end = matchDelimiter(text, pos + 1, "{", "}");
+    const end = matchDelimiter(text, pos + 1, "{", "}", 1, nestLoneBraces);
     return end === -1 ? null : end;
   }
 
@@ -740,7 +748,7 @@ export class Tokenizer {
           } else if (c === "$" && (this.src[this.pos + 1] === "(" || this.src[this.pos + 1] === "{")) {
             // A substitution nests its own quotes: "$(grep ")" f)" does not end
             // at the quote inside the substitution
-            value += this.readDollar();
+            value += this.readDollar(true);
           } else if (c === "`") {
             value += this.readBacktick();
           } else {
@@ -1035,8 +1043,11 @@ export class Tokenizer {
    * `<( )` — where `#` opens a comment and `<<` opens a heredoc whose body must
    * be stepped over. It stays off for `${ }`, where `#` is the length and
    * prefix-strip operator, and for arithmetic.
+   *
+   * `nestLoneBraces` is zsh's unquoted `${…}`, where every `{` deepens the
+   * scan and `${x:-{ } }` runs to the last brace.
    */
-  private readBalanced(open: string, close: string, depth: number = 1, shellCode: boolean = false): { text: string; closed: boolean } {
+  private readBalanced(open: string, close: string, depth: number = 1, shellCode: boolean = false, nestLoneBraces: boolean = false): { text: string; closed: boolean } {
     const extraClosers = depth - 1;
     const start = this.pos;
     const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
@@ -1068,10 +1079,13 @@ export class Tokenizer {
         continue;
       }
 
-      // Inside `${…}` only `${` nests. A lone `{` is ordinary text there, so
-      // counting it would leave the depth short by one and run the scan past
-      // the real closing brace — `${x:/p/\${y}}` is where this shows.
-      const nests = open === "{" ? ch === "{" && this.src[this.pos - 1] === "$" : ch === open;
+      // Inside `${…}` only `${` nests, unless `nestLoneBraces`. A lone `{` is
+      // ordinary text to bash, so counting it would leave the depth short by
+      // one and run the scan past the real closing brace — `${x:/p/\${y}}` is
+      // where this shows.
+      const nests = open === "{"
+        ? ch === "{" && (nestLoneBraces || this.src[this.pos - 1] === "$")
+        : ch === open;
 
       if (nests) { depth++; }
       else if (ch === close) {
@@ -1091,7 +1105,7 @@ export class Tokenizer {
   }
 
   /** Read a $... expansion and return the raw text */
-  private readDollar(): string {
+  private readDollar(quoted: boolean = false): string {
     let result = "$";
     this.pos++; // skip $
 
@@ -1112,9 +1126,10 @@ export class Tokenizer {
         result += "(" + text + (closed ? ")" : "");
       }
     } else if (ch === "{") {
-      // ${...} parameter expansion
+      // ${...} parameter expansion. Unquoted, zsh nests lone braces; inside
+      // double quotes it closes at the first `}` like bash does everywhere.
       this.pos++;
-      const { text, closed } = this.readBalanced("{", "}");
+      const { text, closed } = this.readBalanced("{", "}", 1, false, !quoted && this.dialect === "zsh");
       result += "{" + text + (closed ? "}" : "");
     } else if (ch === "!" || ch === "?" || ch === "#" || ch === "$" || ch === "@" || ch === "*" || ch === "-" || ch === "0") {
       // Special parameters
