@@ -2226,7 +2226,7 @@ export class Parser {
 
   /** Resolve a `$…` expansion inside embedded syntax into a real word part */
   private readExpansionPart(raw: string, pos: number, offset: number): { part: WordPart; next: number } | null {
-    const extent = readExpansionExtent(raw, pos);
+    const extent = readExpansionExtent(raw, pos, this.dialect);
     if (extent === null) return null;
 
     const range = { start: offset + pos, end: offset + extent };

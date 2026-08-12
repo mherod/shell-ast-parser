@@ -1860,6 +1860,28 @@ describe("the zsh dialect", () => {
     expect(parts.length).toBe(1);
     expect(parts[0].expression).toBe("#arg");
   });
+
+  test("$#arr is still a length inside arithmetic", () => {
+    // zsh -c 'arr=(a b c); echo $(( $#arr + 1 ))' prints 4
+    const expansion = first("echo $(( $#arr + 1 ))").args[0].parts[0];
+    expect(expansion.parsed).not.toBeNull();
+    expect(expansion.parsed.op).toBe("+");
+    expect(expansion.parsed.left.type).toBe("ArithmeticSubstitution");
+    expect(expansion.parsed.left.part.expression).toBe("#arr");
+  });
+
+  test("$#arr is still a length in a C-style for header", () => {
+    const loop = first("for (( i = $#arr; i > 0; i-- )); do :; done");
+    expect(loop.type).toBe("ArithmeticForClause");
+    expect(loop.init).not.toBeNull();
+    expect(loop.init.value.part.expression).toBe("#arr");
+  });
+
+  test("$#arr is still a length in a regex operand", () => {
+    const regex = first("[[ $s =~ ^$#arr$ ]]").expression.regex;
+    const expansion = regex.items.find((i: any) => i.type === "RegexExpansion");
+    expect(expansion.part.expression).toBe("#arr");
+  });
 });
 
 describe("brace expansion", () => {
