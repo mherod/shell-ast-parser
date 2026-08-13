@@ -299,6 +299,21 @@ describe("the zsh dialect", () => {
     const vals = tokenize("case $x in a) echo hi;| esac", { dialect: "zsh" }).map(t => t.value);
     expect(vals).toContain(";|");
   });
+
+  test("a lone } mid-command is an operator in zsh but a word in bash", () => {
+    const zshToks = tokenize("echo }", { dialect: "zsh" });
+    expect(zshToks[1]!.type).toBe(TokenType.Operator);
+    expect(zshToks[1]!.value).toBe("}");
+
+    const bashToks = tokenize("echo }", { dialect: "bash" });
+    expect(bashToks[1]!.type).toBe(TokenType.Word);
+    expect(bashToks[1]!.value).toBe("}");
+  });
+
+  test("} at command start is a keyword in both dialects", () => {
+    expect(tokenize("}", { dialect: "bash" })[0]!.type).toBe(TokenType.Keyword);
+    expect(tokenize("}", { dialect: "zsh" })[0]!.type).toBe(TokenType.Keyword);
+  });
 });
 
 describe("heredoc delimiter spelling", () => {

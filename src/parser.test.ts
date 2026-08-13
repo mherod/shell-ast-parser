@@ -2303,3 +2303,30 @@ describe("a parse covers the whole source", () => {
     expect(parseShell(src).comments.length).toBe(2);
   });
 });
+
+describe("lone closing brace handling", () => {
+  test("bash accepts a lone } mid-command as an argument", () => {
+    const cmd = (parseShell("echo }").commands[0] as any).commands[0];
+    expect(cmd.type).toBe("SimpleCommand");
+    expect(cmd.args[0].parts[0].value).toBe("}");
+  });
+
+  test("bash distinguishes argument } from group-closing } in { echo }; }", () => {
+    const group = (parseShell("{ echo }; }").commands[0] as any).commands[0];
+    expect(group.type).toBe("BraceGroup");
+    const innerCmd = group.body.commands[0].commands[0];
+    expect(innerCmd.type).toBe("SimpleCommand");
+    expect(innerCmd.args[0].parts[0].value).toBe("}");
+  });
+
+  test("zsh rejects a lone } mid-command", () => {
+    expect(() => parseShell("echo }", { dialect: "zsh" })).toThrow(ParseError);
+    expect(() => parseShell("{ echo }; }", { dialect: "zsh" })).toThrow(ParseError);
+  });
+
+  test("zsh accepts } attached to non-whitespace in argument position", () => {
+    const cmd = (parseShell("echo }a", { dialect: "zsh" }).commands[0] as any).commands[0];
+    expect(cmd.args[0].parts[0].value).toBe("}a");
+  });
+});
+

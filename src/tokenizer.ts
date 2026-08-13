@@ -266,6 +266,16 @@ export class Tokenizer {
           continue;
         }
 
+        // In bash, a `}` not at command position is an ordinary word (e.g. `echo }`
+        // or `{ echo }; }`). In zsh, a lone `}` mid-command is rejected as an
+        // unexpected operator/closer, but `}word` is still a word.
+        if (ch === "}" && !this.atCommandStart) {
+          if (this.dialect !== "zsh" || !/[\s\n;]/.test(this.src[this.pos + 1] ?? " ")) {
+            this.readWord();
+            continue;
+          }
+        }
+
         if (this.atCommandStart && (ch === "{" || ch === "}")) {
           this.tokens.push({
             type: TokenType.Keyword,
