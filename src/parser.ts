@@ -8,7 +8,8 @@ import type {
   Subshell, BraceGroup, FunctionDef, Comment, Coproc,
   Dialect, ParseOptions,
 } from "./ast.ts";
-import { tokenize, readHereDocHeader, skipHereDocBodies, readExpansionExtent, splitArithmeticClauses, EXTGLOB_LEADS, type Token, TokenType } from "./tokenizer.ts";
+import { tokenize, splitArithmeticClauses, type Token, TokenType } from "./tokenizer.ts";
+import { EXTGLOB_LEADS, matchDelimiter, readBalanced, readExpansionExtent, skipQuoted } from "./scan.ts";
 import { parseArithmetic } from "./arithmetic.ts";
 import { parseRegex } from "./regex.ts";
 
@@ -205,20 +206,7 @@ function splitAlternatives(text: string): { text: string; offset: number }[] {
  * the word — `("a)b"|c)` closes at the last paren, not the quoted one.
  */
 function matchingParen(raw: string, open: number): number {
-  let depth = 0;
-
-  for (let i = open; i < raw.length; i++) {
-    const ch = raw[i]!;
-    if (ch === "\\") { i++; continue; }
-    if (ch === "'" || ch === '"') { i = skipQuoted(raw, i) - 1; continue; }
-    if (ch === "(") depth++;
-    else if (ch === ")") {
-      depth--;
-      if (depth === 0) return i + 1;
-    }
-  }
-
-  return -1;
+  return matchDelimiter(raw, open, "(", ")");
 }
 
 /** The characters zsh allows in a glob qualifier, e.g. `.`, `-/FN`, `om[1,3]` */
@@ -317,99 +305,9 @@ function unwrapQuotes(raw: string): { text: string; offset: number } {
   return wrapped ? { text: raw.slice(1, -1), offset: 1 } : { text: raw, offset: 0 };
 }
 
-/** Skip a quoted span starting at the opening quote; returns the index past it */
-function skipQuoted(raw: string, start: number): number {
-  const quote = raw[start]!;
-  let i = start + 1;
-
-  while (i < raw.length && raw[i] !== quote) {
-    // Backslash escapes exist inside double quotes only
-    if (quote === '"' && raw[i] === "\\") i += 2;
-    else i++;
-  }
-
-  return i < raw.length ? i + 1 : i;
-}
-
-/**
- * Whether the character at `pos` begins a word — true at the start of the
- * region, after whitespace, or after an operator that ends the previous word.
- * Only there does `#` open a comment.
- */
-function startsWord(raw: string, pos: number, regionStart: number): boolean {
-  if (pos === regionStart) return true;
-  const prev = raw[pos - 1]!;
-  return prev === " " || prev === "\t" || prev === "\n" || prev === ";" || prev === "&" || prev === "|" || prev === "(";
-}
-
-/**
- * Read a delimited region, starting at the index of its opener. Quoted spans
- * are skipped whole, so a delimiter inside a string does not close the region:
- * `$(grep ")" file)` runs to the last paren, not the quoted one.
- *
- * `depth` above 1 is for openers spelled with repeated delimiters, like `$((`.
- * The extra closers land at the end of the body, so they are trimmed off.
- *
- * `shellCode` marks regions whose contents are shell code — `$( )` and `<( )` —
- * where `#` opens a comment and `<<` opens a heredoc whose body must be stepped
- * over. It stays off for `${ }`, where `#` is the length and prefix-strip
- * operator, and for arithmetic.
- *
- * `nestLoneBraces` is zsh's unquoted `${…}`, where every `{` deepens the scan;
- * bash counts only `${`, so its expansions end at the first unmatched `}` —
- * the same rule the tokenizer applied when it read the word.
- */
-function readDelimited(raw: string, open: number, openCh: string, closeCh: string, depth: number = 1, shellCode: boolean = false, nestLoneBraces: boolean = false): { body: string; next: number } {
-  const extraClosers = depth - 1;
-  const start = open + 1;
-  const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
-  let i = start;
-
-  while (i < raw.length) {
-    const ch = raw[i]!;
-
-    if (ch === "\\") { i += 2; continue; }
-    if (ch === "'" || ch === '"') { i = skipQuoted(raw, i); continue; }
-
-    if (shellCode && ch === "#" && startsWord(raw, i, start)) {
-      while (i < raw.length && raw[i] !== "\n") i++;
-      continue;
-    }
-
-    if (shellCode && ch === "<" && raw[i + 1] === "<") {
-      const header = readHereDocHeader(raw, i);
-      if (header) {
-        heredocs.push({ delimiter: header.delimiter, stripTabs: header.stripTabs });
-        i = header.next;
-        continue;
-      }
-    }
-
-    if (ch === "\n" && heredocs.length > 0) {
-      i = skipHereDocBodies(raw, i + 1, heredocs);
-      heredocs.length = 0;
-      continue;
-    }
-
-    if (ch === openCh && (openCh !== "{" || nestLoneBraces || raw[i - 1] === "$")) depth++;
-    else if (ch === closeCh) {
-      depth--;
-      if (depth === 0) break;
-    }
-    i++;
-  }
-
-  let body = raw.slice(start, i);
-  for (let n = 0; n < extraClosers && body.endsWith(closeCh); n++) {
-    body = body.slice(0, -1);
-  }
-
-  return { body, next: i < raw.length ? i + 1 : i };
-}
-
 /** `$( )` and `<( )` bodies hold shell code, so `#` opens a comment */
 function readParenBody(raw: string, openParen: number): { body: string; next: number } {
-  return readDelimited(raw, openParen, "(", ")", 1, true);
+  return readBalanced(raw, openParen, "(", ")", 1, true);
 }
 
 /**
@@ -1975,7 +1873,7 @@ export class Parser {
         if (next === "{") {
           // ${...} — unquoted, zsh nests lone braces; bash never does
           const { body: expr, next: after } =
-            readDelimited(raw, i + 1, "{", "}", 1, false, this.dialect === "zsh" && quote === null);
+            readBalanced(raw, i + 1, "{", "}", 1, false, this.dialect === "zsh" && quote === null);
           i = after;
           parts.push({
             type: "VariableExpansion",
@@ -1988,7 +1886,7 @@ export class Parser {
           if (i + 2 < raw.length && raw[i + 2] === "(") {
             // $(( arithmetic ))
             const exprStart = i + 3;
-            const { body: expr, next: after } = readDelimited(raw, i + 2, "(", ")", 2);
+            const { body: expr, next: after } = readBalanced(raw, i + 2, "(", ")", 2);
             i = after;
             parts.push({
               type: "ArithmeticExpansion",
@@ -2155,7 +2053,7 @@ export class Parser {
         flushLiteral(i);
         const start = i;
         const bodyStart = i + 2;
-        const { body, next } = readDelimited(raw, i + 1, "(", ")");
+        const { body, next } = readBalanced(raw, i + 1, "(", ")");
         i = next;
         parts.push({
           type: "GlobPattern",
