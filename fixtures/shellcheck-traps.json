@@ -1,0 +1,52 @@
+[
+  {
+    "name": "command substitution inside double quotes with internal quotes",
+    "source": "result=\"$(printf '%s\\n' \"$USER's file\")\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "heredoc started on condition line that continues with ; then",
+    "source": "if cat << EOF; then\nbody\nEOF\n  echo yes\nfi\necho after\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "multiple heredocs defined on a single command line",
+    "source": "diff -u <<EOF1 <<EOF2\nfirst file content\nEOF1\nsecond file content\nEOF2\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "multiline double bracket condition carrying comments and wrapped operators",
+    "source": "if [[ -n $A\n      # check flag\n      && ( -z $B || $C == \"test\" )\n    ]]; then\n  echo ok\nfi\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "keywords appearing in argument position mid-command",
+    "source": "echo if then else fi for in do done case esac\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "lone closing brace mid-command in bash argument position",
+    "source": "awk '{ print $1 }' file.txt\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "temporary prefix environment variable assignments before command",
+    "source": "LC_ALL=C LANG=C sort data.txt\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "nested command substitution inside parameter expansion default",
+    "source": "CONFIG_PATH=\"${CONFIG_PATH:-$(dirname \"$0\")/config.json}\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "escaped dollar signs and backticks inside backtick substitution",
+    "source": "OUTPUT=`echo \\$(CC) -e \\`basename file.c\\``\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "line continuation joining command and operator across line break",
+    "source": "command \\\n  --opt1='val1' \\\n  --opt2='val2' && \\\n  echo 'success'\n",
+    "dialect": "bash"
+  }
+]

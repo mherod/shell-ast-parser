@@ -1,0 +1,87 @@
+[
+  {
+    "name": "double bracket conditional with extglob and regex match",
+    "source": "if [[ $file == @(*.jpg|*.jpeg|*.png) || $file =~ ^image_[0-9]+\\.raw$ ]]; then\n  echo \"image\"\nfi\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "double bracket with parentheses grouping and boolean operators",
+    "source": "[[ ( -n $FOO && -z $BAR ) || ! -f /etc/config ]]\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "C-style for loop with three arithmetic clauses",
+    "source": "for (( i = 0, j = 10; i < 10 && j > 0; i++, j -= 2 )); do\n  echo \"$i: $j\"\ndone\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "arithmetic expansion with precedence, ternary, and bitwise operators",
+    "source": "TOTAL=$(( (base * 2 + 0x10) << 2 ^ (flag ? mask & 0xff : 0) ))\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "arithmetic command (( )) with assignment and pre-increment",
+    "source": "(( count += ++index ** 2 ))\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "parameter expansion substring and replacement",
+    "source": "echo \"${VAR:0:5} ${VAR/foo/bar} ${VAR//[0-9]/#}\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "parameter expansion case modification and prefix list",
+    "source": "echo \"${VAR^^} ${VAR,,} ${!CONFIG_*}\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "indexed array definition, indexing, and append",
+    "source": "declare -a items=(alpha 'beta gamma' \"delta\")\nitems[3]=\"epsilon\"\nitems+=(zeta eta)\necho \"${items[@]:1:2} length=${#items[@]}\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "associative array definition and key access",
+    "source": "declare -A map=([user]=\"alice\" [role]=\"admin\")\necho \"${map[user]} keys=${!map[@]}\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "process substitutions into diff",
+    "source": "diff -u <(sort file1.txt) <(sort file2.txt)\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "process substitution output redirect to tee",
+    "source": "command 2> >(logger -t 'myapp') > >(tee output.log)\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "here-string redirect",
+    "source": "tr '[:lower:]' '[:upper:]' <<< \"hello world $USER\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "bash function keywords both styles",
+    "source": "function fn_one {\n  echo \"one\"\n}\nfunction fn_two() {\n  echo \"two\"\n}\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "coprocess with named and anonymous forms",
+    "source": "coproc MY_PROC { while read -r line; do echo \"echo $line\"; done; }\ncoproc { sleep 10; }\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "declare attributes with readonly, integer, and trace",
+    "source": "declare -r -i MAX_RETRIES=5\ndeclare -x EXPORTED_VAR=\"global\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "ANSI-C quoted strings with escape characters",
+    "source": "NL=$'\\n'\nTAB=$'\\t'\nUNICODE=$'\\u00A9 2026'\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "let command evaluating multiple arithmetic expressions",
+    "source": "let 'x = 5 + 2' 'y = x * 3' 'z = (x > y)'\n",
+    "dialect": "bash"
+  }
+]

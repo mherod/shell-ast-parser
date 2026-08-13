@@ -1,0 +1,102 @@
+[
+  {
+    "name": "simple command with options and args",
+    "source": "grep -rnI --color=auto 'pattern' ./src\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "sequential commands with semicolon and newline",
+    "source": "mkdir -p out; cd out\necho \"done\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "multi-stage pipeline with background job",
+    "source": "cat data.log | grep -v 'DEBUG' | sort | uniq -c &",
+    "dialect": "bash"
+  },
+  {
+    "name": "and/or list chaining",
+    "source": "test -f config.json && cat config.json || echo 'default' > config.json\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "redirects combining stdin, stdout, and stderr",
+    "source": "command < input.txt > output.txt 2>&1\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "append redirect and noclobber redirect",
+    "source": "echo 'line' >> log.txt\necho 'force' >| file.txt\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "standard if-then-elif-else-fi clause",
+    "source": "if [ -d \"$DIR\" ]; then\n  echo \"directory exists\"\nelif [ -f \"$DIR\" ]; then\n  echo \"it is a file\"\nelse\n  echo \"not found\"\nfi\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "for-in loop over quoted list",
+    "source": "for item in 'first item' 'second item' 'third'; do\n  echo \"processing $item\"\ndone\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "while loop with test condition and break",
+    "source": "while read -r line; do\n  [ -z \"$line\" ] && break\n  echo \"> $line\"\ndone < input.txt\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "until loop with multiple commands in condition",
+    "source": "until ping -c 1 host.local >/dev/null 2>&1; do\n  sleep 1\ndone\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "case statement with multiple pattern alternatives and wildcards",
+    "source": "case \"$EXT\" in\n  tar.gz|tgz) tar -xzf \"$ARCHIVE\" ;;\n  tar.bz2|tbz2) tar -xjf \"$ARCHIVE\" ;;\n  zip) unzip \"$ARCHIVE\" ;;\n  *) echo \"unknown: $EXT\"; exit 1 ;;\nesac\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "subshell execution with environment variable assignment",
+    "source": "( export FOO=bar; cd /tmp && ./run.sh ) > log.txt\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "brace group with redirection",
+    "source": "{ echo \"header\"; date; echo \"---\"; } > output.log\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "POSIX function definition with comments inside",
+    "source": "cleanup() {\n  # remove scratch files\n  rm -rf \"$TMPDIR\"\n  return 0\n}\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "standard heredoc with variable expansion",
+    "source": "cat <<EOF\nHello $USER\nToday is $(date)\nEOF\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "quoted heredoc suppressing expansion",
+    "source": "cat <<'EOF'\nLiteral $USER and `command`\nEOF\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "heredoc with tab stripping <<-",
+    "source": "cat <<-EOF\n\tindented line\n\tEOF\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "standard parameter expansion modifiers",
+    "source": "echo \"${VAR:-default} ${VAR:=set} ${VAR:+alternate} ${VAR:?error}\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "parameter prefix/suffix pattern removal",
+    "source": "FILE=\"path/to/archive.tar.gz\"\nNAME=\"${FILE##*/}\"\nBASE=\"${NAME%.tar.gz}\"\necho \"$NAME $BASE\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "parameter length operator",
+    "source": "LEN=${#MY_STRING}\n",
+    "dialect": "bash"
+  }
+]

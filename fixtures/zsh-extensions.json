@@ -1,0 +1,57 @@
+[
+  {
+    "name": "zsh glob qualifiers for plain files, directories, and symlinks",
+    "source": "files=(*(.)) dirs=(*(/)) links=(*(@))\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh glob qualifier with sorting and index slice",
+    "source": "newest_three=(*(om[1,3]))\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh numeric glob range open-ended and bounded",
+    "source": "ls -l *.<1-100> version.<1->.log\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh bare glob alternation without @ prefix",
+    "source": "cp -r (src|lib|test) dist/\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh parameter expansion flags uppercase, lowercase, split lines",
+    "source": "upper=${(U)name} lower=${(L)name} lines=${(f)$(cat file.txt)}\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh string and array negative indexing / slicing",
+    "source": "tag=${name[1,-2]} branch[13,-13]=\"...\"\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh repeat loop block",
+    "source": "repeat 3 {\n  echo \"attempt\"\n}\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh anonymous function block",
+    "source": "function {\n  local scoped=\"isolated\"\n  echo \"running anonymous $scoped\"\n}\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh always block try-finally structure",
+    "source": "{\n  echo \"performing unsafe work\"\n} always {\n  rm -f /tmp/lock.pid\n}\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh parameter length expression inside arithmetic",
+    "source": "total=$(( $#items + $#extra ))\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh case statement with ;| continue-next-case terminator",
+    "source": "case $opt in\n  -v) verbose=1 ;|\n  -a) all=1 ;;\nesac\n",
+    "dialect": "zsh"
+  }
+]

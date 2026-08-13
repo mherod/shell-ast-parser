@@ -1,0 +1,52 @@
+[
+  {
+    "name": "tree-sitter: simple pipelines and lists",
+    "source": "whoami | cat\ncat foo | grep -v bar\na | b && c && d; d e f || e g\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "tree-sitter: while loop with multi-command condition",
+    "source": "while something happens; do\n  echo a\n  echo b\ndone\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "tree-sitter: for in loop over variable and literals",
+    "source": "for x in a b c; do\n  echo $x\ndone\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "tree-sitter: C-style arithmetic for loop",
+    "source": "for ((a = 0; a < 10; a++)); do\n  echo $a\ndone\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "tree-sitter: if statement with elif and else branches",
+    "source": "if a; then\n  b\nelif c; then\n  d\nelse\n  e\nfi\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "tree-sitter: case statement with patterns and body",
+    "source": "case a in\n  b)\n    c\n    ;;\n  d | e)\n    f\n    ;;\nesac\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "tree-sitter: function definitions both with and without keyword",
+    "source": "function a() {\n  b\n}\nc() {\n  d\n}\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "tree-sitter: subshell and brace group compound commands",
+    "source": "( a; b ) && { c; d; }\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "tree-sitter: variable expansions simple, braced, and command substitution",
+    "source": "echo $a ${b} $(c) `d`\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "tree-sitter: redirections file, descriptor duplication, and heredoc",
+    "source": "cmd < input > output 2>&1 <<EOF\nheredoc body\nEOF\n",
+    "dialect": "bash"
+  }
+]
