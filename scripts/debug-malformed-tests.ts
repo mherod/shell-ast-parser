@@ -8,6 +8,7 @@
  * valid, so ask it rather than argue from the test name.
  */
 import { parseShell } from "../index.ts";
+import { shellAccepts } from "./harness.ts";
 
 const INPUTS = [
   "[[",
@@ -23,19 +24,8 @@ const INPUTS = [
   "[[ $s =~ a{ ]]",
 ];
 
-async function bashRejects(source: string): Promise<string | null> {
-  const proc = Bun.spawn(["bash", "-n"], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-  proc.stdin.write(`${source}\n`);
-  await proc.stdin.end();
-
-  const stderr = await new Response(proc.stderr).text();
-  await proc.exited;
-
-  return proc.exitCode === 0 ? null : (stderr.trim().split("\n").pop() ?? "rejected");
-}
-
 for (const input of INPUTS) {
-  const bash = await bashRejects(input);
+  const bash = await shellAccepts("bash", `${input}\n`);
 
   let ours: string;
   const started = performance.now();

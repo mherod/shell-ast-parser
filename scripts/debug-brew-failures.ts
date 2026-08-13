@@ -9,6 +9,7 @@
  * alongside so a real gap is told from bad input.
  */
 import { parseShell } from "../index.ts";
+import { shellAccepts } from "./harness.ts";
 
 const CASES: { name: string; source: string }[] = [
   // git pre-commit.sample
@@ -35,19 +36,9 @@ const CASES: { name: string; source: string }[] = [
   { name: "heredoc inside a redirect", source: 'cat > f << EOF\nbody\nEOF\necho after\n' },
 ];
 
-async function bashVerdict(source: string): Promise<string> {
-  const proc = Bun.spawn(["bash", "-n"], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-  proc.stdin.write(source);
-  await proc.stdin.end();
-
-  await new Response(proc.stderr).text();
-  await proc.exited;
-
-  return proc.exitCode === 0 ? "accepts" : "rejects";
-}
-
 for (const testCase of CASES) {
-  const bash = await bashVerdict(testCase.source);
+  const bashResult = await shellAccepts("bash", testCase.source);
+  const bash = bashResult === null ? "accepts" : "rejects";
 
   let ours: string;
   try {

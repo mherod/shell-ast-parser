@@ -19,7 +19,9 @@
 import { homedir } from "node:os";
 import { tokenize, type Token } from "../src/tokenizer.ts";
 import { parse, ParseError } from "../src/parser.ts";
+import { visit } from "../src/walk.ts";
 import type { Dialect, Script } from "../src/ast.ts";
+import { redact, positionOf } from "./harness.ts";
 
 const HOME = homedir();
 
@@ -107,59 +109,13 @@ async function shellOf(path: string): Promise<Dialect | null> {
 
 // ── Redaction ──────────────────────────────────────────────────────
 
-const SECRET_NAME = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|API|PAT|SESSION)/i;
-
-/** Mask assignment values under secret-looking names, plus long opaque runs. */
-function redact(text: string): string {
-  return text
-    .replace(/([A-Za-z_][A-Za-z0-9_]*)=(\S+)/g, (whole, name: string) =>
-      SECRET_NAME.test(name) ? `${name}=<redacted>` : whole,
-    )
-    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "<redacted>");
-}
-
-// ── Source context ─────────────────────────────────────────────────
-
-interface Position {
-  line: number;
-  column: number;
-  text: string;
-}
-
-function positionOf(source: string, offset: number): Position {
-  const before = source.slice(0, offset);
-  const line = before.split("\n").length;
-  const lineStart = before.lastIndexOf("\n") + 1;
-  const lineEnd = source.indexOf("\n", offset);
-  return {
-    line,
-    column: offset - lineStart + 1,
-    text: source.slice(lineStart, lineEnd === -1 ? source.length : lineEnd),
-  };
-}
-
-// ── AST walking ────────────────────────────────────────────────────
-
-/** Every node reachable from the root, by walking whatever has a `type`. */
-function walk(node: unknown, visit: (node: { type: string }) => void): void {
-  if (Array.isArray(node)) {
-    for (const item of node) walk(item, visit);
-    return;
-  }
-  if (node === null || typeof node !== "object") return;
-
-  const record = node as Record<string, unknown>;
-  if (typeof record.type === "string") visit(record as { type: string });
-
-  for (const [key, value] of Object.entries(record)) {
-    if (key === "range") continue;
-    walk(value, visit);
-  }
-}
+// ── Node & Token Counting ──────────────────────────────────────────
 
 function countNodeTypes(script: Script): Map<string, number> {
   const counts = new Map<string, number>();
-  walk(script, (node) => counts.set(node.type, (counts.get(node.type) ?? 0) + 1));
+  visit(script, (node) => {
+    counts.set(node.type, (counts.get(node.type) ?? 0) + 1);
+  });
   return counts;
 }
 
@@ -196,7 +152,7 @@ interface RangeFault {
 function checkRanges(source: string, script: Script): RangeFault[] {
   const faults: RangeFault[] = [];
 
-  walk(script, (node) => {
+  visit(script, (node) => {
     const range = (node as { range?: { start: number; end: number } }).range;
     if (!range) return;
 
@@ -241,7 +197,7 @@ interface Gap {
 function findCoverageGaps(source: string, script: Script): Gap[] {
   const covered = new Uint8Array(source.length);
 
-  walk(script, (node) => {
+  visit(script, (node) => {
     const range = (node as { range?: { start: number; end: number } }).range;
     if (!range) return;
     for (let i = Math.max(0, range.start); i < Math.min(source.length, range.end); i++) {

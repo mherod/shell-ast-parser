@@ -9,6 +9,7 @@
  * zsh at all.
  */
 import { parseShell } from "../index.ts";
+import { shellAccepts } from "./harness.ts";
 
 const CASES: { name: string; source: string }[] = [
   // 10 of the 20 files stop here
@@ -39,21 +40,15 @@ const CASES: { name: string; source: string }[] = [
   { name: "case body on the pattern line", source: "case $x in\n  (none) if true; then\n    echo hi\n  fi\n  ;;\nesac\n" },
 ];
 
-async function shellVerdict(shell: string, source: string): Promise<string> {
-  const proc = Bun.spawn([shell, "-n"], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-  proc.stdin.write(source);
-  await proc.stdin.end();
-
-  await new Response(proc.stderr).text();
-  await proc.exited;
-
-  return proc.exitCode === 0 ? "accepts" : "rejects";
-}
-
 for (const testCase of CASES) {
+  const bashRes = await shellAccepts("bash", testCase.source);
+  const zshRes = await shellAccepts("zsh", testCase.source);
+  const bash = bashRes === null ? "accepts" : "rejects";
+  const zsh = zshRes === null ? "accepts" : "rejects";
+
   console.log(`\n=== ${testCase.name} ===`);
   console.log(`  src:  ${JSON.stringify(testCase.source)}`);
-  console.log(`  bash: ${await shellVerdict("bash", testCase.source)}   zsh: ${await shellVerdict("zsh", testCase.source)}`);
+  console.log(`  bash: ${bash}   zsh: ${zsh}`);
 
   for (const dialect of ["bash", "zsh"] as const) {
     try {

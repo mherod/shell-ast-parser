@@ -10,6 +10,7 @@
  * quieter than an error and worse, since every offset after it is wrong too.
  */
 import { parseShell } from "../index.ts";
+import { findRangeFaults } from "./harness.ts";
 
 const CASES: { name: string; source: string }[] = [
   { name: "backtick, plain", source: "x=`echo a -e b`\n" },
@@ -22,38 +23,8 @@ const CASES: { name: string; source: string }[] = [
   { name: "plain continuation, no substitution", source: "echo a \\\n  -e b\n" },
 ];
 
-interface Fault {
-  type: string;
-  value: string;
-  sliced: string;
-}
-
-/** Every Word whose range no longer picks out its own text */
-function faults(source: string, node: unknown, found: Fault[] = []): Fault[] {
-  if (Array.isArray(node)) {
-    for (const item of node) faults(source, item, found);
-    return found;
-  }
-  if (node === null || typeof node !== "object") return found;
-
-  const record = node as Record<string, unknown>;
-  if (record.type === "Word" && typeof record.value === "string" && record.quoted === null) {
-    const range = record.range as { start: number; end: number };
-    const sliced = source.slice(range.start, range.end);
-    if (sliced !== record.value && !record.value.includes("\\") && !sliced.includes("\\")) {
-      found.push({ type: "Word", value: record.value, sliced });
-    }
-  }
-
-  for (const [key, value] of Object.entries(record)) {
-    if (key === "range") continue;
-    faults(source, value, found);
-  }
-  return found;
-}
-
 for (const testCase of CASES) {
-  const found = faults(testCase.source, parseShell(testCase.source));
+  const found = findRangeFaults(testCase.source, parseShell(testCase.source));
   console.log(`${found.length === 0 ? "ok  " : "DRIFT"} ${testCase.name}`);
   console.log(`      src: ${JSON.stringify(testCase.source)}`);
   for (const fault of found) {

@@ -7,7 +7,7 @@
  * become confident and wrong. Each entry below is an assertion lifted from the
  * document, so the file can be checked the way the parser is.
  */
-import { parseShell, ParseError } from "../index.ts";
+import { parseShell, ParseError, findAll } from "../index.ts";
 
 interface Claim {
   says: string;
@@ -16,22 +16,6 @@ interface Claim {
 
 const first = (src: string, dialect: "bash" | "zsh" = "bash") =>
   (parseShell(src, { dialect }).commands[0] as any).commands[0];
-
-/** Every node of a type, anywhere in the tree */
-function find(node: unknown, type: string, found: any[] = []): any[] {
-  if (Array.isArray(node)) {
-    for (const item of node) find(item, type, found);
-    return found;
-  }
-  if (node === null || typeof node !== "object") return found;
-
-  const record = node as Record<string, unknown>;
-  if (record.type === type) found.push(record);
-  for (const [key, value] of Object.entries(record)) {
-    if (key !== "range") find(value, type, found);
-  }
-  return found;
-}
 
 const CLAIMS: Claim[] = [
   {
@@ -46,8 +30,8 @@ const CLAIMS: Claim[] = [
     says: "ranges index the original source, at any depth",
     holds: () => {
       const src = "echo $(date +%F)";
-      const sub = find(parseShell(src), "CommandSubstitution")[0];
-      return src.slice(sub.body.range.start, sub.body.range.end) === "date +%F";
+      const sub = findAll(parseShell(src), "CommandSubstitution")[0];
+      return Boolean(sub && src.slice(sub.body.range.start, sub.body.range.end) === "date +%F");
     },
   },
   {
@@ -67,8 +51,8 @@ const CLAIMS: Claim[] = [
   {
     says: "arithmetic nests by precedence, so 1+2*3 groups the multiplication",
     holds: () => {
-      const arith = find(parseShell("echo $((1+2*3))"), "ArithmeticExpansion")[0];
-      return arith.parsed?.type === "ArithmeticBinary" && arith.parsed.op === "+" &&
+      const arith = findAll(parseShell("echo $((1+2*3))"), "ArithmeticExpansion")[0] as any;
+      return arith?.parsed?.type === "ArithmeticBinary" && arith.parsed.op === "+" &&
         arith.parsed.right.op === "*";
     },
   },
@@ -76,7 +60,7 @@ const CLAIMS: Claim[] = [
     says: "a [[ ]] condition spans lines and carries comments, giving one TestCommand",
     holds: () => {
       const script = parseShell("[[ -n $A\n   # why\n   && -z $B\n]]");
-      return script.commands.length === 1 && find(script, "TestCommand").length === 1;
+      return script.commands.length === 1 && findAll(script, "TestCommand").length === 1;
     },
   },
   {
@@ -113,14 +97,14 @@ const CLAIMS: Claim[] = [
     says: "declare -a X=(1 2) is one command whose argument is the assignment",
     holds: () => {
       const cmd = first("declare -a X=(1 2)");
-      return cmd.type === "SimpleCommand" && find(cmd, "ArrayLiteral").length === 1;
+      return cmd.type === "SimpleCommand" && findAll(cmd, "ArrayLiteral").length === 1;
     },
   },
   {
     says: "a function defined earlier shadows a builtin recognised by name",
     holds: () => {
       const shadowed = parseShell("let() { :; }\nlet x=1");
-      return find(shadowed, "LetCommand").length === 0;
+      return findAll(shadowed, "LetCommand").length === 0;
     },
   },
   {

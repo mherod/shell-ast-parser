@@ -9,6 +9,7 @@
  * reads the short answer as the whole answer.
  */
 import { parseShell } from "../index.ts";
+import { shellAccepts, getCommandNames } from "./harness.ts";
 
 const CASES: { name: string; source: string }[] = [
   { name: "array w/ paren-suffixed word", source: "X=($HOME/bin(N))\necho AFTER\n" },
@@ -19,45 +20,14 @@ const CASES: { name: string; source: string }[] = [
   { name: "stray brace", source: "echo one\n}\necho AFTER\n" },
 ];
 
-/** Names of every SimpleCommand in the tree, at any depth. */
-function commandNames(node: unknown, found: string[] = []): string[] {
-  if (Array.isArray(node)) {
-    for (const item of node) commandNames(item, found);
-    return found;
-  }
-  if (node === null || typeof node !== "object") return found;
-
-  const record = node as Record<string, unknown>;
-  if (record.type === "SimpleCommand" && record.name) {
-    const parts = (record.name as { parts?: { value?: string }[] }).parts ?? [];
-    found.push(parts.map((part) => part.value ?? "?").join(""));
-  }
-
-  for (const [key, value] of Object.entries(record)) {
-    if (key === "range") continue;
-    commandNames(value, found);
-  }
-  return found;
-}
-
-async function bashVerdict(source: string): Promise<string> {
-  const proc = Bun.spawn(["bash", "-n"], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-  proc.stdin.write(source);
-  await proc.stdin.end();
-
-  await new Response(proc.stderr).text();
-  await proc.exited;
-
-  return proc.exitCode === 0 ? "accepts" : "rejects";
-}
-
 for (const testCase of CASES) {
-  const bash = await bashVerdict(testCase.source);
+  const bashResult = await shellAccepts("bash", testCase.source);
+  const bash = bashResult === null ? "accepts" : "rejects";
 
   let ours: string;
   let names: string[] = [];
   try {
-    names = commandNames(parseShell(testCase.source));
+    names = getCommandNames(parseShell(testCase.source));
     ours = "accepts";
   } catch (error) {
     ours = `throws — ${(error as Error).message}`;

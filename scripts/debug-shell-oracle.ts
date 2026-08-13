@@ -9,14 +9,9 @@
  * only zsh accepts is out of scope, and should be recorded as such rather than
  * chased.
  */
-import { parseShell } from "../index.ts";
+import { runCaseTable, type CaseSnippet } from "./harness.ts";
 
-interface Snippet {
-  name: string;
-  source: string;
-}
-
-const SNIPPETS: Snippet[] = [
+const SNIPPETS: CaseSnippet[] = [
   {
     name: "multiline [[ ]] with && on next line",
     source: "if [[ -n $A\n      && -z $B ]]; then\n  echo yes\nfi\n",
@@ -84,55 +79,4 @@ const SNIPPETS: Snippet[] = [
   { name: "zsh glob qualifier (N) in array", source: "X=($HOME/bin(N) $X)\n" },
 ];
 
-async function shellAccepts(shell: string, source: string): Promise<string | null> {
-  const proc = Bun.spawn([shell, "-n"], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-  proc.stdin.write(source);
-  await proc.stdin.end();
-
-  const stderr = await new Response(proc.stderr).text();
-  await proc.exited;
-
-  return proc.exitCode === 0 ? null : stderr.trim().split("\n")[0] ?? "rejected";
-}
-
-function parserAccepts(source: string): string | null {
-  try {
-    parseShell(source);
-    return null;
-  } catch (error) {
-    return (error as Error).message;
-  }
-}
-
-const results: { name: string; verdict: string }[] = [];
-
-for (const snippet of SNIPPETS) {
-  const bash = await shellAccepts("bash", snippet.source);
-  const zsh = await shellAccepts("zsh", snippet.source);
-  const ours = parserAccepts(snippet.source);
-
-  console.log(`\n=== ${snippet.name} ===`);
-  console.log(JSON.stringify(snippet.source));
-  console.log(`  bash: ${bash === null ? "accepts" : `rejects — ${bash}`}`);
-  console.log(`  zsh:  ${zsh === null ? "accepts" : `rejects — ${zsh}`}`);
-  console.log(`  ours: ${ours === null ? "accepts" : `rejects — ${ours}`}`);
-
-  const verdict =
-    ours === null
-      ? bash === null || zsh === null
-        ? "ok"
-        : "OVER-ACCEPTS (both shells reject)"
-      : bash === null
-        ? "REAL GAP (bash accepts)"
-        : zsh === null
-          ? "zsh-only (out of scope)"
-          : "ok (both shells reject too)";
-
-  console.log(`  verdict: ${verdict}`);
-  results.push({ name: snippet.name, verdict });
-}
-
-console.log("\n=== summary ===");
-for (const result of results) {
-  console.log(`${result.verdict.padEnd(28)} ${result.name}`);
-}
+await runCaseTable(SNIPPETS);
