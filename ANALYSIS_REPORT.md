@@ -12,7 +12,7 @@ Findings 1–5 are defects the parser had, 6–10 are constructs it silently dro
 on the floor, and 11–29 are places where the AST asserted things about the
 source that were not true.
 
-Status: all findings below are fixed. `bun test` → 296 pass / 0 fail. `tsc --noEmit` → clean.
+Status: all findings below are fixed. `bun test` → 422 pass / 0 fail. `tsc --noEmit` → clean.
 
 ---
 
@@ -626,7 +626,7 @@ for code that lives in `parser.ts`.
 
 ## Regression coverage added
 
-`src/parser.test.ts`, 296 tests total: heredoc content attachment, two-heredoc
+`src/parser.test.ts` (342 tests), `src/tokenizer.test.ts` (61 tests), `src/scan.test.ts` (12 tests), `src/walk.test.ts` (7 tests), 422 tests total: heredoc content attachment, two-heredoc
 ordering, quoted and `<<-` delimiters, `function name { }`, `coproc NAME { }`,
 `[[ ]]` redirects, array literals (empty, multi-line, expansion elements,
 detached-paren disambiguation, unterminated), background on pipelines and lists

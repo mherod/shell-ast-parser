@@ -98,7 +98,7 @@ interface PendingHereDoc {
   stripTabs: boolean;
 }
 
-export class Tokenizer {
+class Tokenizer {
   private src: string;
   private pos: number = 0;
   private tokens: Token[] = [];

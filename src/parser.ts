@@ -398,7 +398,7 @@ export class ParseError extends Error {
   }
 }
 
-export class Parser {
+class Parser {
   private tokens: Token[];
   private pos: number = 0;
   private comments: Comment[] = [];
