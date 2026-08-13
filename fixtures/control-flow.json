@@ -1,0 +1,27 @@
+[
+  {
+    "name": "case statement with leading parens and multiple pattern alternatives",
+    "source": "case \"$opt\" in\n  (a|b) echo \"ab\" ;;\n  (c) echo \"abc\" ;;\n  (d*) echo \"d prefix\" ;;\n  (*e) echo \"ends with e\" ;;\n  *) echo \"default\" ;;\nesac\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "one-line compact compound commands",
+    "source": "if true; then :; elif false; then :; else :; fi\nwhile false; do :; done\nuntil true; do :; done\nfor x in 1 2 3; do :; done\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "function with subshell body and function with loop body",
+    "source": "subshell_fn() ( export FOO=bar; cd /tmp; ls )\nloop_fn() while read -r line; do echo \"> $line\"; done\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "coprocess with named block and anonymous block",
+    "source": "coproc MY_COPROC { while read -r msg; do echo \"ack: $msg\"; done; }\ncoproc { sleep 60; }\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "negated background pipeline with subshell",
+    "source": "! ( cat /var/log/syslog | grep -E \"ERROR|FATAL\" | head -n 100 ) > err.txt 2>&1 &\n",
+    "dialect": "bash"
+  }
+]

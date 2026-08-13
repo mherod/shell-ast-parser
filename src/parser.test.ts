@@ -2313,3 +2313,79 @@ describe("lone closing brace handling", () => {
   });
 });
 
+describe("tricky parser test bed cases", () => {
+  test("deeply nested parameter expansions parse into a valid VariableExpansion node", () => {
+    const script = parseShell('VAL="${A:-${B:-${C:-"fallback"}}}"');
+    const [pipeline] = script.commands as any[];
+    const cmd = pipeline.commands[0];
+    const assign = cmd.assignments[0];
+    expect(assign.name).toBe("VAL");
+    expect(assign.value.parts[0].type).toBe("VariableExpansion");
+    expect(assign.value.parts[0].expression).toBe('A:-${B:-${C:-"fallback"}}');
+  });
+
+  test("multiple chained heredocs across pipeline attach to their respective commands", () => {
+    const src = "cmd1 <<EOF1 | cmd2 <<EOF2\nfirst body\nEOF1\nsecond body\nEOF2\n";
+    const script = parseShell(src);
+    const [pipeline] = script.commands as any[];
+    expect(pipeline.commands.length).toBe(2);
+    expect(pipeline.commands[0].redirects[0].target.content).toBe("first body\n");
+    expect(pipeline.commands[1].redirects[0].target.content).toBe("second body\n");
+  });
+
+  test("nested ternary arithmetic conditional creates correct left/condition/then/else nodes", () => {
+    const script = parseShell("(( res = a ? b : c ? d : e ))");
+    const [pipeline] = script.commands as any[];
+    const arithCmd = pipeline.commands[0];
+    expect(arithCmd.type).toBe("ArithmeticCommand");
+    expect(arithCmd.parsed).not.toBeNull();
+    expect(arithCmd.parsed.type).toBe("ArithmeticAssignment");
+    expect(arithCmd.parsed.value.type).toBe("ArithmeticConditional");
+  });
+
+  test("complex regex with IPv4 pattern parses into structured RegexNode", () => {
+    const src = '[[ $ip =~ ^([0-9]{1,3}\\.){3}[0-9]{1,3}$ ]]';
+    const script = parseShell(src);
+    const [pipeline] = script.commands as any[];
+    const testCmd = pipeline.commands[0];
+    expect(testCmd.type).toBe("TestCommand");
+    expect(testCmd.expression.type).toBe("TestBinary");
+    expect(testCmd.expression.op).toBe("=~");
+    expect(testCmd.expression.regex).not.toBeNull();
+  });
+
+  test("zsh anonymous functions with arguments parse into FunctionDef with name=null and args", () => {
+    const src = 'function {\n  local x=$1\n  echo "$x"\n} "first" "second"\n';
+    const script = parseShell(src, { dialect: "zsh" });
+    const [pipeline] = script.commands as any[];
+    const fnDef = pipeline.commands[0];
+    expect(fnDef.type).toBe("FunctionDef");
+    expect(fnDef.name).toBeNull();
+    expect(fnDef.args.length).toBe(2);
+    expect(fnDef.args[0].parts[0].value).toBe("first");
+    expect(fnDef.args[1].parts[0].value).toBe("second");
+  });
+
+  test("zsh try-finally always block attaches always body to BraceGroup", () => {
+    const src = '{\n  echo "unsafe"\n} always {\n  rm -f lock\n}\n';
+    const script = parseShell(src, { dialect: "zsh" });
+    const [pipeline] = script.commands as any[];
+    const brace = pipeline.commands[0];
+    expect(brace.type).toBe("BraceGroup");
+    expect(brace.always).not.toBeNull();
+    expect(brace.always.commands.length).toBe(1);
+  });
+
+  test("redirection applied to while loop carries onto WhileClause.redirects", () => {
+    const src = 'while read -r line; do echo "$line"; done < input.txt > output.txt\n';
+    const script = parseShell(src);
+    const [pipeline] = script.commands as any[];
+    const loop = pipeline.commands[0];
+    expect(loop.type).toBe("WhileClause");
+    expect(loop.redirects.length).toBe(2);
+    expect(loop.redirects[0].op).toBe("<");
+    expect(loop.redirects[1].op).toBe(">");
+  });
+});
+
+

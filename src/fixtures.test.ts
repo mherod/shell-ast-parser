@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { parseShell, visit } from "../index.ts";
+import { parseShell, visit, ParseError } from "../index.ts";
 import { ALL_FIXTURE_SUITES } from "../fixtures/index.ts";
 import { findRangeFaults, getCommandNames } from "../scripts/harness.ts";
 
@@ -9,6 +9,12 @@ describe("Fixture Testbed Conformance & Invariants", () => {
       for (const fixture of suite.cases) {
         test(fixture.name, () => {
           const dialect = fixture.dialect ?? "bash";
+
+          if (fixture.shouldError) {
+            expect(() => parseShell(fixture.source, { dialect })).toThrow(ParseError);
+            return;
+          }
+
           const script = parseShell(fixture.source, { dialect });
 
           // 1. Root AST structure

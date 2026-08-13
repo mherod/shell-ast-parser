@@ -1,0 +1,42 @@
+[
+  {
+    "name": "nested ternary conditional and chained assignment operators",
+    "source": "TOTAL=$(( a ? b : c ? d : e ? f : g ))\n(( x = y = z = 10, a += b *= c -= 2 ))\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "complex bitwise, logical, unary, and exponentiation precedence",
+    "source": "VAL=$(( ~(a << 3 & 0xFF) ^ (b >> 2 | 0x0F) ** (c % 4 + +d - -e) ))\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "pre/post increment/decrement chained expressions",
+    "source": "RES=$(( ++i + j++ - --k - l-- + +m - -n ))\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "multi-base numbers in arithmetic expression",
+    "source": "NUM=$(( 16#FF + 2#11001100 + 8#755 + 0xABCD + 0777 + 36#ZZ + 64#@_ ))\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "array subscripts and dynamic indexing in arithmetic",
+    "source": "(( arr[i * 2 + 1] += 10, matrix[x][y] = arr[i] ** 2 ))\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "C-style for loop with missing clauses and multiple comma expressions",
+    "source": "for (( ; ; )); do break; done\nfor (( i=0, j=100; i<10 && j>0; i++, j-=10 )); do :; done\nfor (( ; i<5; i++ )); do :; done\nfor (( i=0; ; i++ )); do (( i >= 5 )) && break; done\nfor (( i=0; i<5; )); do (( i++ )); done\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "let command evaluating multiple complex arithmetic arguments",
+    "source": "let \"x = 5 * 10\" 'y = x / 2' z=x+y 'flag = (x > y ? 1 : 0)'\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "arithmetic command with logical comparisons and bitwise not",
+    "source": "(( (a > 10 && b <= 20) || (c != 0 && ~d == 5) ))\n",
+    "dialect": "bash"
+  }
+]

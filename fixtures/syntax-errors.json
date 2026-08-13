@@ -1,0 +1,68 @@
+[
+  {
+    "name": "unclosed brace group {",
+    "source": "{ echo hello; echo world",
+    "dialect": "bash",
+    "shouldError": true
+  },
+  {
+    "name": "unclosed subshell (",
+    "source": "( cd /tmp && ls",
+    "dialect": "bash",
+    "shouldError": true
+  },
+  {
+    "name": "unclosed if statement",
+    "source": "if [ -f /tmp/test ]; then echo \"yes\"",
+    "dialect": "bash",
+    "shouldError": true
+  },
+  {
+    "name": "unclosed for loop",
+    "source": "for x in 1 2 3; do echo $x",
+    "dialect": "bash",
+    "shouldError": true
+  },
+  {
+    "name": "unclosed while loop",
+    "source": "while true; do echo \"looping\"",
+    "dialect": "bash",
+    "shouldError": true
+  },
+  {
+    "name": "unclosed case statement",
+    "source": "case $x in a) echo a ;;",
+    "dialect": "bash",
+    "shouldError": true
+  },
+  {
+    "name": "stray closing parenthesis",
+    "source": "echo hello )\n",
+    "dialect": "bash",
+    "shouldError": true
+  },
+  {
+    "name": "stray fi keyword",
+    "source": "echo start\nfi\n",
+    "dialect": "bash",
+    "shouldError": true
+  },
+  {
+    "name": "stray done keyword",
+    "source": "echo start\ndone\n",
+    "dialect": "bash",
+    "shouldError": true
+  },
+  {
+    "name": "stray esac keyword",
+    "source": "echo start\nesac\n",
+    "dialect": "bash",
+    "shouldError": true
+  },
+  {
+    "name": "stray closing brace in zsh",
+    "source": "echo hello }\n",
+    "dialect": "zsh",
+    "shouldError": true
+  }
+]

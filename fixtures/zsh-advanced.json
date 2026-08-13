@@ -1,0 +1,52 @@
+[
+  {
+    "name": "exhaustive glob qualifiers for types, permissions, times, and sorting",
+    "source": "print *(.) *(/) *(@) *(=) *(p) *(x) *(X) *(U) *(G) *(m-7) *(a+30) *(Lk+100) *(om[1,5]) *(On) *(-/FN) *(.^w)\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh numeric glob ranges in filenames and patterns",
+    "source": "ls logs/app.<1-100>.log archive/data.<-50>.tar backup.<10->.bak any.<->\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh parameter flags for case, quoting, splitting, joining, and sorting",
+    "source": "up=${(U)var} low=${(L)var} cap=${(C)var} q=${(q)var} qq=${(qq)var} split=${(f)text} join=${(j:,:)arr} sort=${(o)arr} rsort=${(O)arr} keys=${(k)map} vals=${(v)map}\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh nested parameter expansion flags and commands",
+    "source": "res=${(j:,:)${(f)\"$(cat file.txt)\"}}\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh array and string subscripts with search flags (i, I, r, R, k)",
+    "source": "first_idx=${arr[(i)pattern]} last_idx=${arr[(I)pattern]} first_val=${arr[(r)pattern]} last_val=${arr[(R)pattern]} slice=${arr[2,-2]}\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh anonymous functions with trailing arguments",
+    "source": "function {\n  local arg1=$1 arg2=$2\n  print \"$arg1: $arg2\"\n} \"param1\" \"param2\"\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh try-finally always blocks with nested error handling",
+    "source": "{\n  print \"try block\"\n  perform_risky_operation\n} always {\n  print \"always block\"\n  rm -f /tmp/lockfile\n}\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh repeat loops with both brace and do-done syntax",
+    "source": "repeat 5 {\n  print \"tick\"\n}\nrepeat $COUNT do\n  print \"count tick\"\ndone\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh short-form loops and brace if",
+    "source": "for x (alpha beta gamma) print $x\nfor x (a b c) { print $x }\nif [[ -n $x ]] { print \"x is set\"; }\n",
+    "dialect": "zsh"
+  },
+  {
+    "name": "zsh case statement with ;| test-next-pattern fallthrough",
+    "source": "case $opt in\n  -a) all=1 ;|\n  -v) verbose=1 ;|\n  -q) quiet=1 ;;\nesac\n",
+    "dialect": "zsh"
+  }
+]

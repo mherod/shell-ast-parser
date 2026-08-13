@@ -1,0 +1,32 @@
+[
+  {
+    "name": "regex matching with complex regex groups, classes, and quantifiers",
+    "source": "if [[ $ip =~ ^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$ ]]; then\n  echo \"valid ip\"\nfi\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "regex matching with quoted literal strings and runtime expansions",
+    "source": "[[ $url =~ ^https?://\"$ALLOWED_HOST\"(/$PATH_PATTERN)?$ ]]\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "pattern matching with extglobs in double bracket test",
+    "source": "[[ $filename == !(*.bak|*.tmp|*.swp) && $answer == @([Yy]|[Yy][Ee][Ss]) ]]\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "complex nested parentheses boolean logic in double brackets",
+    "source": "[[ ( -f $file && ! -s $file ) || ( -d $dir && ( -r $dir || -w $dir ) ) && ! ( -L $file ) ]]\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "multiline double bracket with comments between each condition",
+    "source": "if [[ \n    -n \"$A\"\n    # check flag B\n    && ( -z \"$B\" || \"$B\" == \"default\" )\n    # check file exists\n    && -f \"/path/to/${FILE}\"\n  ]]; then\n  echo \"ok\"\nfi\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "POSIX test and single bracket with -a, -o, !, and sub-grouping",
+    "source": "[ -f \"$file\" -a \\( -r \"$file\" -o -w \"$file\" \\) ]\ntest ! -d \"$dir\" -o -x \"$dir\"\n[ \"$a\" = \"$b\" -a \"$c\" != \"$d\" -a \"$num\" -gt 10 ]\n",
+    "dialect": "bash"
+  }
+]

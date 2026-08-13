@@ -36,7 +36,7 @@ for (const suite of suitesToRun) {
   totalCases += results.length;
 
   for (const res of results) {
-    if (res.verdict === "ok" || res.verdict === "zsh-only (out of scope)") {
+    if (res.verdict === "ok" || res.verdict === "ok (both shells reject too)" || res.verdict === "zsh-only (out of scope)") {
       okCount++;
     }
   }

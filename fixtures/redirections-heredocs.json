@@ -1,0 +1,57 @@
+[
+  {
+    "name": "multi-digit file descriptors, reading, writing, and closing",
+    "source": "exec 3<input.dat 4>output.dat 5>>append.dat 6<>rw.dat 3<&- 4>&-\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "file descriptor duplication and movement 3<&0-",
+    "source": "cmd 3<&0- 4>&1- 2>&1 >/dev/null\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "combined redirects &> and &>> and noclobber >|",
+    "source": "make &> build.log\nmake test &>> build.log\necho force >| clobber.txt\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "bash automatic fd allocation {var}>file and closing",
+    "source": "exec {my_fd}>output.log\necho \"hello\" >&$my_fd\nexec {my_fd}>&-\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "leading redirections before command name",
+    "source": "<input.txt >output.txt 2>err.log grep \"needle\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "redirections applied to compound if, while, for, and brace groups",
+    "source": "if [ -f a ]; then cat a; else cat b; fi > if_out.txt 2>&1\nwhile read -r l; do echo \"$l\"; done < in.txt > out.txt\nfor x in 1 2 3; do echo \"$x\"; done > for_out.txt\n{ date; uptime; } > brace_out.txt\n( cd /tmp && ls ) > subshell_out.txt\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "multiple chained heredocs across pipeline",
+    "source": "cmd1 <<EOF1 | cmd2 <<EOF2 | cmd3 <<EOF3\nfirst body\nEOF1\nsecond body\nEOF2\nthird body\nEOF3\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "heredoc supplying input to while read loop",
+    "source": "while read -r key val; do\n  echo \"$key => $val\"\ndone <<'EOF'\nname Alice\nage 30\ncity London\nEOF\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "heredoc in if condition line continuing with then",
+    "source": "if grep -q \"pattern\" <<EOF; then\nline containing pattern\nEOF\n  echo \"matched\"\nfi\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "tab-stripped heredoc <<- with quoted delimiter",
+    "source": "cat <<-'END_MSG'\n\tline 1 $NOT_EXPANDED\n\tline 2 `not_run`\n\tEND_MSG\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "here-string with expansion and ANSI-C multiline string",
+    "source": "grep -F \"search\" <<< \"$DATA\"\ncat <<< $'line1\\nline2\\nline3'\n",
+    "dialect": "bash"
+  }
+]

@@ -1,4 +1,4 @@
-import { parseShell, visit, findAll, type ParseOptions, type Script } from "../index.ts";
+import { parseShell, visit, findAll, type ParseOptions, type Script, type Dialect } from "../index.ts";
 
 export interface ShellResult {
   code: number | null;
@@ -58,6 +58,7 @@ export type Verdict =
   | "ok"
   | "ok (both shells reject too)"
   | "REAL GAP (bash accepts)"
+  | "REAL GAP (zsh accepts)"
   | "OVER-ACCEPTS (both shells reject)"
   | "zsh-only (out of scope)";
 
@@ -68,12 +69,27 @@ export function computeVerdict(
   ours: string | null,
   bash: string | null,
   zsh: string | null,
+  dialect: Dialect = "bash",
+  shouldError: boolean = false,
 ): Verdict {
+  if (shouldError) {
+    if (ours !== null) {
+      return "ok (both shells reject too)";
+    }
+    return "OVER-ACCEPTS (both shells reject)";
+  }
+
   if (ours === null) {
+    if (dialect === "zsh") {
+      return zsh === null ? "ok" : "OVER-ACCEPTS (both shells reject)";
+    }
     return bash === null || zsh === null ? "ok" : "OVER-ACCEPTS (both shells reject)";
   }
-  if (bash === null) {
+  if (dialect === "bash" && bash === null) {
     return "REAL GAP (bash accepts)";
+  }
+  if (dialect === "zsh" && zsh === null) {
+    return "REAL GAP (zsh accepts)";
   }
   if (zsh === null) {
     return "zsh-only (out of scope)";
@@ -84,6 +100,8 @@ export function computeVerdict(
 export interface CaseSnippet {
   name: string;
   source: string;
+  dialect?: Dialect;
+  shouldError?: boolean;
 }
 
 export interface CaseResult {
@@ -105,10 +123,11 @@ export async function runCaseTable(
   const results: CaseResult[] = [];
 
   for (const snippet of cases) {
+    const dialect = snippet.dialect ?? "bash";
     const bash = await shellAccepts("bash", snippet.source);
     const zsh = await shellAccepts("zsh", snippet.source);
-    const ours = parserAccepts(snippet.source);
-    const verdict = computeVerdict(ours, bash, zsh);
+    const ours = parserAccepts(snippet.source, { dialect });
+    const verdict = computeVerdict(ours, bash, zsh, dialect, snippet.shouldError ?? false);
 
     if (options.verbose) {
       console.log(`\n=== ${snippet.name} ===`);

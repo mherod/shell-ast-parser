@@ -384,3 +384,74 @@ describe("heredocs and here-strings inside substitutions", () => {
     expect(values("x=$(echo <<<here)")).toEqual(["x=$(echo <<<here)", ""]);
   });
 });
+
+describe("complex quoting & word concatenation tokenization", () => {
+  test("adjacent mixed quote styles tokenize as a single word", () => {
+    const tokens = tokenize("prefix'single'\"double\"$'ansi'$ \"loc\"suffix").filter(t => t.type !== TokenType.EOF);
+    expect(tokens.length).toBe(2);
+    expect(tokens[0]!.type).toBe(TokenType.Word);
+    expect(tokens[0]!.value).toBe("prefix'single'\"double\"$'ansi'$");
+    expect(tokens[1]!.value).toBe("\"loc\"suffix");
+  });
+
+  test("empty quote strings tokenize into a single word token", () => {
+    const tokens = tokenize('""\'\'$\'\'$""').filter(t => t.type !== TokenType.EOF);
+    expect(tokens.length).toBe(1);
+    expect(tokens[0]!.type).toBe(TokenType.Word);
+    expect(tokens[0]!.value).toBe('""\'\'$\'\'$""');
+  });
+
+  test("escaped shell metacharacters stay inside unquoted word", () => {
+    const tokens = tokenize("cmd \\  \\( \\) \\{ \\} \\; \\& \\| \\< \\>").filter(t => t.type !== TokenType.EOF);
+    expect(tokens.length).toBe(11);
+    expect(tokens.every(t => t.type === TokenType.Word)).toBe(true);
+  });
+});
+
+describe("advanced redirection and descriptor tokenization", () => {
+  test("multi-digit file descriptors tokenize as Redirect tokens with fd included", () => {
+    const tokens = tokenize("cmd 10>&1 3<&- 4<in 5>>out 6<>rw >|clobber").filter(t => t.type !== TokenType.EOF);
+    const redirects = tokens.filter(t => t.type === TokenType.Redirect);
+    expect(redirects.map(t => t.value)).toEqual(["10>&", "3<&", "4<", "5>>", "6<>", ">|"]);
+  });
+
+  test("file descriptor movement and closing 3<&0-", () => {
+    const tokens = tokenize("cmd 3<&0- 4>&1-").filter(t => t.type !== TokenType.EOF);
+    const redirects = tokens.filter(t => t.type === TokenType.Redirect);
+    expect(redirects.map(t => t.value)).toEqual(["3<&", "4>&"]);
+  });
+
+  test("bash variable fd allocation {fd}>file", () => {
+    const tokens = tokenize("exec {my_fd}>log.txt").filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.value).toBe("exec");
+    expect(tokens[1]!.type).toBe(TokenType.Word);
+    expect(tokens[1]!.value).toBe("{my_fd}");
+    expect(tokens[2]!.type).toBe(TokenType.Redirect);
+    expect(tokens[2]!.value).toBe(">");
+    expect(tokens[3]!.value).toBe("log.txt");
+  });
+});
+
+describe("advanced zsh tokenization constructs", () => {
+  test("exhaustive zsh glob qualifiers stay in word", () => {
+    const source = "print *(.) *(/) *(@) *(=) *(p) *(x) *(X) *(U) *(G) *(m-7) *(a+30) *(Lk+100) *(om[1,5]) *(On) *(-/FN) *(.^w)";
+    const tokens = tokenize(source, { dialect: "zsh" }).filter(t => t.type !== TokenType.EOF);
+    expect(tokens.length).toBe(17);
+    expect(tokens[0]!.value).toBe("print");
+    expect(tokens.slice(1).every(t => t.type === TokenType.Word)).toBe(true);
+  });
+
+  test("zsh numeric ranges in various position patterns", () => {
+    const tokens = tokenize("ls *.<1-100> data.<-50>.tar log.<10->.bak any.<->", { dialect: "zsh" }).filter(t => t.type !== TokenType.EOF);
+    expect(tokens.length).toBe(5);
+    expect(tokens.every(t => t.type === TokenType.Word)).toBe(true);
+  });
+
+  test("zsh parameter flags and nested expansions", () => {
+    const tokens = tokenize("echo ${(U)var} ${(j:,:)${(f)lines}}", { dialect: "zsh" }).filter(t => t.type !== TokenType.EOF);
+    expect(tokens.length).toBe(3);
+    expect(tokens[1]!.value).toBe("${(U)var}");
+    expect(tokens[2]!.value).toBe("${(j:,:)${(f)lines}}");
+  });
+});
+

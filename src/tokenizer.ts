@@ -207,10 +207,11 @@ class Tokenizer {
         continue;
       }
 
-      // Digit before redirect: e.g. 2>
-      if (ch >= "0" && ch <= "9" && this.pos + 1 < this.src.length) {
-        const next = this.src[this.pos + 1]!;
-        if (next === ">" || next === "<") {
+      // Digit(s) before redirect: e.g. 2> or 10>&1
+      if (ch >= "0" && ch <= "9") {
+        let i = this.pos;
+        while (i < this.src.length && this.src[i]! >= "0" && this.src[i]! <= "9") i++;
+        if (i < this.src.length && (this.src[i] === ">" || this.src[i] === "<")) {
           this.readRedirectOrProcessSub();
           continue;
         }

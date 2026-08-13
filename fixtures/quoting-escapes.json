@@ -1,0 +1,52 @@
+[
+  {
+    "name": "adjacent mixed quoting concatenation without whitespace",
+    "source": "VAR=prefix'single'\"double\"$'$ansi_c'$\"locale\"suffix\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "ANSI-C quoting with octal, hex, and unicode escapes",
+    "source": "MSG=$'Octal: \\101\\102, Hex: \\x43\\x44, Uni16: \\u0045, Uni32: \\U00000046, Bell: \\a, Esc: \\e'\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "ANSI-C quoting with control chars and escaped quotes",
+    "source": "ESC=$'\\c?\\cM\\cI\\'\\\"\\\\'\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "line continuation across assignment and operator",
+    "source": "A=1 \\\nB=2 \\\ncmd \\\n  --flag \\\n  && \\\n  echo \\\n    done\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "line continuation inside double quoted string",
+    "source": "STR=\"first line \\\nsecond line \\\nthird line\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "escaped special characters as unquoted words",
+    "source": "echo \\  \\( \\) \\{ \\} \\; \\& \\| \\< \\> \\* \\? \\[ \\] \\$ \\\\ \\` \\\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "empty strings of various quote kinds concatenated",
+    "source": "EMPTY=\"\"''$''$\"\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "single quotes inside double quotes inside command substitution",
+    "source": "VAR=\"$(echo 'single in double')\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "escaped dollar and backticks inside backticks",
+    "source": "RESULT=`echo \\$VAR \\`date\\``\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "literal hash character in middle of word vs comment",
+    "source": "echo http://example.com/page#section # this is comment\n",
+    "dialect": "bash"
+  }
+]

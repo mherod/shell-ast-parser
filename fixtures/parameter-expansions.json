@@ -1,0 +1,52 @@
+[
+  {
+    "name": "deeply nested parameter expansion defaults with substitutions",
+    "source": "VAL=\"${A:-${B:-${C:-$(echo \"${D:-fallback}\")}}}}\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "substring expansion with negative offset and length expressions",
+    "source": "echo \"${VAR: -5:2}\" \"${VAR:1+2:3*2}\" \"${ARR[@]: -3:2}\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "pattern replacement with escaped slashes and quotes",
+    "source": "PATH_MOD=\"${ORIG_PATH//\\//:}\" QUOTE_MOD=\"${TEXT/foo/\\\"bar/baz\\\"}\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "pattern replacement anchored to head and tail",
+    "source": "HEAD=\"${VAR/#prefix/NEW}\" TAIL=\"${VAR/%suffix/END}\" DEL=\"${VAR//pattern}\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "case modification with character class pattern",
+    "source": "UP=\"${VAR^^[a-z]}\" LOW=\"${VAR,,[A-Z]}\" FIRST_UP=\"${VAR^[a-z]}\" FIRST_LOW=\"${VAR,[A-Z]}\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "indirect expansion and variable name prefix matching",
+    "source": "echo \"${!REF_VAR}\" \"${!PREFIX_*}\" \"${!PREFIX_@}\" \"${!MAP[@]}\" \"${!ARR[*]}\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "bash 4.4+ parameter transformations (@Q, @P, @A, @a, @E, @U, @L)",
+    "source": "echo \"${VAR@Q}\" \"${VAR@E}\" \"${VAR@P}\" \"${VAR@A}\" \"${VAR@a}\" \"${VAR@U}\" \"${VAR@L}\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "special parameters single digit, multi-digit, and special symbols",
+    "source": "echo \"$0\" \"$1\" \"$9\" \"${10}\" \"${123}\" \"$$\" \"$?\" \"$!\" \"$-\" \"$*\" \"$@\" \"$#\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "parameter length operator on scalar and array",
+    "source": "echo \"${#STRING}\" \"${#ARRAY[@]}\" \"${#ARRAY[0]}\"\n",
+    "dialect": "bash"
+  },
+  {
+    "name": "parameter expansion alternate values and error assertions",
+    "source": "echo \"${VAR:+has_value}\" \"${VAR:=set_if_unset}\" \"${VAR:?required_var}\"\n",
+    "dialect": "bash"
+  }
+]
