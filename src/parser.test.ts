@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { parseShell, parse, ParseError, tokenize, TokenType } from "../index.ts";
+import { parseShell, parse, ParseError, tokenize, TokenType, visit, firstOf } from "../index.ts";
 import type { Dialect, IfClause, ProcessSubstitution } from "../src/ast.ts";
 
 function parseCmd(src: string) {
@@ -1925,18 +1925,7 @@ describe("heredoc delimiters", () => {
   const commands = (src: string) => parseShell(src).commands;
 
   /** The first HereDoc anywhere, since it may sit inside an if or a loop */
-  const heredoc = (src: string): any => {
-    let found: any = null;
-    const walk = (node: unknown) => {
-      if (found || node === null || typeof node !== "object") return;
-      if (Array.isArray(node)) return node.forEach(walk);
-      const record = node as Record<string, unknown>;
-      if (record.type === "HereDoc") { found = record; return; }
-      Object.values(record).forEach(walk);
-    };
-    walk(parseShell(src));
-    return found;
-  };
+  const heredoc = (src: string) => firstOf(parseShell(src), "HereDoc")!;
 
   test("a backslash quotes the delimiter, as quotes do", () => {
     // All three name EOF and all three suppress expansion; only the spelling
@@ -1976,17 +1965,11 @@ describe("ranges survive a substitution's escapes", () => {
   // left them a character early, and drifting further with each escape.
   const drifted = (src: string) => {
     const found: string[] = [];
-    const walk = (node: unknown) => {
-      if (Array.isArray(node)) return node.forEach(walk);
-      if (node === null || typeof node !== "object") return;
-      const record = node as Record<string, unknown>;
-      if (record.type === "Word" && record.quoted === null && typeof record.value === "string") {
-        const range = record.range as { start: number; end: number };
-        if (src.slice(range.start, range.end) !== record.value) found.push(record.value);
+    visit(parseShell(src), (node) => {
+      if (node.type === "Word" && node.quoted === null && typeof node.value === "string") {
+        if (src.slice(node.range.start, node.range.end) !== node.value) found.push(node.value);
       }
-      for (const [key, value] of Object.entries(record)) if (key !== "range") walk(value);
-    };
-    walk(parseShell(src));
+    });
     return found;
   };
 

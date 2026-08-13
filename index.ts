@@ -1,5 +1,19 @@
 export { tokenize, type Token, TokenType } from "./src/tokenizer.ts";
 export { parse, ParseError } from "./src/parser.ts";
+export {
+  visit,
+  findAll,
+  firstOf,
+  SKIP,
+  EXIT,
+  isAstNode,
+  isNodeType,
+  type AstNode,
+  type AstNodeMap,
+  type AstNodeType,
+  type Visitor,
+  type VisitorResult,
+} from "./src/walk.ts";
 export type * from "./src/ast.ts";
 
 import { tokenize } from "./src/tokenizer.ts";
