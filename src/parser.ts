@@ -199,13 +199,18 @@ function splitAlternatives(text: string): { text: string; offset: number }[] {
   return alternatives;
 }
 
-/** Index just past the `)` matching the `(` at `open`, or -1 if unbalanced */
+/**
+ * Index just past the `)` matching the `(` at `open`, or -1 if unbalanced.
+ * Quoted spans are skipped whole, as the tokenizer skipped them when it read
+ * the word — `("a)b"|c)` closes at the last paren, not the quoted one.
+ */
 function matchingParen(raw: string, open: number): number {
   let depth = 0;
 
   for (let i = open; i < raw.length; i++) {
     const ch = raw[i]!;
     if (ch === "\\") { i++; continue; }
+    if (ch === "'" || ch === '"') { i = skipQuoted(raw, i) - 1; continue; }
     if (ch === "(") depth++;
     else if (ch === ")") {
       depth--;
@@ -349,8 +354,12 @@ function startsWord(raw: string, pos: number, regionStart: number): boolean {
  * where `#` opens a comment and `<<` opens a heredoc whose body must be stepped
  * over. It stays off for `${ }`, where `#` is the length and prefix-strip
  * operator, and for arithmetic.
+ *
+ * `nestLoneBraces` is zsh's unquoted `${…}`, where every `{` deepens the scan;
+ * bash counts only `${`, so its expansions end at the first unmatched `}` —
+ * the same rule the tokenizer applied when it read the word.
  */
-function readDelimited(raw: string, open: number, openCh: string, closeCh: string, depth: number = 1, shellCode: boolean = false): { body: string; next: number } {
+function readDelimited(raw: string, open: number, openCh: string, closeCh: string, depth: number = 1, shellCode: boolean = false, nestLoneBraces: boolean = false): { body: string; next: number } {
   const extraClosers = depth - 1;
   const start = open + 1;
   const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
@@ -382,7 +391,7 @@ function readDelimited(raw: string, open: number, openCh: string, closeCh: strin
       continue;
     }
 
-    if (ch === openCh) depth++;
+    if (ch === openCh && (openCh !== "{" || nestLoneBraces || raw[i - 1] === "$")) depth++;
     else if (ch === closeCh) {
       depth--;
       if (depth === 0) break;
@@ -434,6 +443,33 @@ function remapRanges(node: unknown, map: number[], seen: Set<object> = new Set()
       remapRanges(value, map, seen);
     }
   }
+}
+
+/**
+ * A token's text as the source spells it, with the backslash-newline pairs the
+ * tokenizer dropped put back. Parsing this instead of `value` keeps every
+ * offset the parser computes as `range.start + index` true to the source —
+ * the word machinery makes the pairs vanish again, part by part.
+ */
+function tokenSourceText(tok: Token): string {
+  if (!tok.joins?.length) return tok.value;
+
+  let text = "";
+  let from = 0;
+  for (const join of tok.joins) {
+    text += tok.value.slice(from, join) + "\\\n";
+    from = join;
+  }
+  return text + tok.value.slice(from);
+}
+
+/** Where value index `i` sits in the source, given the pairs dropped before it */
+function sourceIndexOf(tok: Token, i: number): number {
+  let shift = 0;
+  for (const join of tok.joins ?? []) {
+    if (join <= i) shift += 2;
+  }
+  return tok.range.start + i + shift;
 }
 
 function shiftRanges(node: unknown, offset: number, seen: Set<object> = new Set()): void {
@@ -843,23 +879,30 @@ export class Parser {
     const lhs = tok.value.slice(0, eqIdx);
     const append = lhs.endsWith("+");
     const target = append ? lhs.slice(0, -1) : lhs;
-    const rawValue = tok.value.slice(eqIdx + 1);
+
+    // Grammar reads the joined value; parts read the source text, whose
+    // indexes agree with the ranges even across a dropped continuation
+    const raw = tokenSourceText(tok);
+    const valueStart = sourceIndexOf(tok, eqIdx) + 1;
+    const rawValue = raw.slice(valueStart - tok.range.start);
 
     // NAME[subscript] — the subscript is a word in its own right, so `$i` in
     // `ITEMS[$i]=x` expands
     const subscripted = target.match(/^([^[]+)\[(.+)\]$/);
     const name = subscripted ? subscripted[1]! : target;
+    const subFrom = subscripted ? sourceIndexOf(tok, name.length + 1) : 0;
+    const subTo = subscripted ? sourceIndexOf(tok, name.length + 1 + subscripted[2]!.length) : 0;
     const subscript = subscripted
       ? this.rawToCompoundWord(
-          subscripted[2]!,
-          { start: tok.range.start + name.length + 1, end: tok.range.start + name.length + 1 + subscripted[2]!.length },
-          tok.range.start + name.length + 1,
+          raw.slice(subFrom - tok.range.start, subTo - tok.range.start),
+          { start: subFrom, end: subTo },
+          subFrom,
         )
       : null;
 
     // `VAR=(a b c)` is an array literal, but `VAR= (cmd)` is an empty
     // assignment followed by a subshell — only adjacency tells them apart.
-    if (rawValue.length === 0 && this.atAny(TokenType.Operator, "(") && this.peek().range.start === tok.range.end) {
+    if (tok.value.length === eqIdx + 1 && this.atAny(TokenType.Operator, "(") && this.peek().range.start === tok.range.end) {
       const value = this.parseArrayLiteral();
       return {
         type: "Assignment",
@@ -877,8 +920,8 @@ export class Parser {
       subscript,
       append,
       // The value starts after the `=`, so its parts are offset from the token
-      value: rawValue.length > 0
-        ? this.rawToCompoundWord(rawValue, { start: tok.range.start + eqIdx + 1, end: tok.range.end }, tok.range.start + eqIdx + 1)
+      value: tok.value.length > eqIdx + 1
+        ? this.rawToCompoundWord(rawValue, { start: valueStart, end: tok.range.end }, valueStart)
         : null,
       range: tok.range,
     };
@@ -1063,7 +1106,7 @@ export class Parser {
       }
 
       const tok = this.advance();
-      const { text, offset } = unwrapQuotes(tok.value);
+      const { text, offset } = unwrapQuotes(tokenSourceText(tok));
       expressions.push({
         text,
         parsed: this.parseArithmeticText(text, tok.range.start + offset),
@@ -1374,7 +1417,7 @@ export class Parser {
       else if (operator && tok.value === ")") depth--;
 
       if (text !== "" && tok.range.start > end) text += " ".repeat(tok.range.start - end);
-      text += tok.value;
+      text += tokenSourceText(tok);
       end = tok.range.end;
       this.advance();
     }
@@ -1802,7 +1845,7 @@ export class Parser {
   }
 
   private tokenToCompoundWord(tok: Token): CompoundWord {
-    const parts = this.parseWordParts(tok.value, tok.range);
+    const parts = this.parseWordParts(tokenSourceText(tok), tok.range);
     return {
       type: "CompoundWord",
       parts,
@@ -1904,18 +1947,18 @@ export class Parser {
         if (next === undefined) {
           addLiteral(ch, i);
           i++;
+        } else if (next === "\n") {
+          i += 2; // line continuation: both characters vanish, quoted or not
         } else if (quote === "double") {
-          // Only these five are escapable in double quotes; elsewhere the
+          // Only these four are escapable in double quotes; elsewhere the
           // backslash is an ordinary character
-          if (next === "$" || next === "`" || next === '"' || next === "\\" || next === "\n") {
+          if (next === "$" || next === "`" || next === '"' || next === "\\") {
             addLiteral(next, i);
             i += 2;
           } else {
             addLiteral(ch, i);
             i++;
           }
-        } else if (next === "\n") {
-          i += 2; // line continuation: both characters vanish
         } else {
           addLiteral(next, i);
           i += 2;
@@ -1930,8 +1973,9 @@ export class Parser {
         const start = i;
 
         if (next === "{") {
-          // ${...}
-          const { body: expr, next: after } = readDelimited(raw, i + 1, "{", "}");
+          // ${...} — unquoted, zsh nests lone braces; bash never does
+          const { body: expr, next: after } =
+            readDelimited(raw, i + 1, "{", "}", 1, false, this.dialect === "zsh" && quote === null);
           i = after;
           parts.push({
             type: "VariableExpansion",
@@ -2208,7 +2252,7 @@ export class Parser {
   /** Parse the operand of `=~` as an extended regular expression */
   private parseRegexText(text: string, offset: number): RegexNode | null {
     return parseRegex(text, offset, {
-      readExpansion: (raw, pos) => this.readExpansionPart(raw, pos, offset),
+      readExpansion: (raw, pos) => this.readExpansionPart(raw, pos, offset, this.dialect === "zsh"),
       readBracket: (raw, pos) => {
         const close = findBracketClose(raw, pos);
         if (close === -1) return null;
@@ -2224,9 +2268,15 @@ export class Parser {
     });
   }
 
-  /** Resolve a `$…` expansion inside embedded syntax into a real word part */
-  private readExpansionPart(raw: string, pos: number, offset: number): { part: WordPart; next: number } | null {
-    const extent = readExpansionExtent(raw, pos);
+  /**
+   * Resolve a `$…` expansion inside embedded syntax into a real word part.
+   *
+   * `nestLoneBraces` follows the context: a regex operand is a word, where
+   * zsh runs `${x:-{}}` to the second brace, while arithmetic ends the
+   * expansion at the first `}` in both dialects.
+   */
+  private readExpansionPart(raw: string, pos: number, offset: number, nestLoneBraces: boolean = false): { part: WordPart; next: number } | null {
+    const extent = readExpansionExtent(raw, pos, this.dialect, nestLoneBraces);
     if (extent === null) return null;
 
     const range = { start: offset + pos, end: offset + extent };

@@ -1860,6 +1860,28 @@ describe("the zsh dialect", () => {
     expect(parts.length).toBe(1);
     expect(parts[0].expression).toBe("#arg");
   });
+
+  test("$#arr is still a length inside arithmetic", () => {
+    // zsh -c 'arr=(a b c); echo $(( $#arr + 1 ))' prints 4
+    const expansion = first("echo $(( $#arr + 1 ))").args[0].parts[0];
+    expect(expansion.parsed).not.toBeNull();
+    expect(expansion.parsed.op).toBe("+");
+    expect(expansion.parsed.left.type).toBe("ArithmeticSubstitution");
+    expect(expansion.parsed.left.part.expression).toBe("#arr");
+  });
+
+  test("$#arr is still a length in a C-style for header", () => {
+    const loop = first("for (( i = $#arr; i > 0; i-- )); do :; done");
+    expect(loop.type).toBe("ArithmeticForClause");
+    expect(loop.init).not.toBeNull();
+    expect(loop.init.value.part.expression).toBe("#arr");
+  });
+
+  test("$#arr is still a length in a regex operand", () => {
+    const regex = first("[[ $s =~ ^$#arr$ ]]").expression.regex;
+    const expansion = regex.items.find((i: any) => i.type === "RegexExpansion");
+    expect(expansion.part.expression).toBe("#arr");
+  });
 });
 
 describe("brace expansion", () => {
@@ -2145,6 +2167,135 @@ describe("line continuations", () => {
   test("a continuation inside a word joins it", () => {
     const cmd = (parseShell("echo /a\\\n/b").commands[0] as any).commands[0];
     expect(cmd.args[0].parts[0].value).toBe("/a/b");
+  });
+
+  // The tokenizer drops the two continuation characters from a token's value
+  // while the range still spans them, so any part offset computed as
+  // range.start + index drifted two right per continuation — the same defect
+  // the backtick position map fixed. The README's promise is the oracle here:
+  // src.slice(part.range.start, part.range.end) is that part's text.
+  test("a part after an in-word continuation still indexes the source", () => {
+    const src = "echo ab\\\ncd$HOME";
+    const parts = (parseShell(src).commands[0] as any).commands[0].args[0].parts;
+    expect(parts[0].value).toBe("abcd");
+    expect(src.slice(parts[1].range.start, parts[1].range.end)).toBe("$HOME");
+  });
+
+  test("an assignment value's parts survive a continuation", () => {
+    const src = "X=/a\\\n/b$HOME";
+    const assignment = (parseShell(src).commands[0] as any).commands[0].assignments[0];
+    const expansion = assignment.value.parts[1];
+    expect(src.slice(expansion.range.start, expansion.range.end)).toBe("$HOME");
+  });
+
+  test("a substitution body after a continuation still indexes the source", () => {
+    const src = "echo ab\\\ncd$(date)";
+    const sub = (parseShell(src).commands[0] as any).commands[0].args[0].parts[1];
+    expect(sub.type).toBe("CommandSubstitution");
+    expect(src.slice(sub.body.range.start, sub.body.range.end)).toBe("date");
+  });
+
+  test("a continuation joins inside double quotes too", () => {
+    // bash -c 'echo "a\<newline>b"' prints ab, not a<newline>b
+    const cmd = (parseShell('echo "a\\\nb"').commands[0] as any).commands[0];
+    expect(cmd.args[0].parts[0].value).toBe("ab");
+  });
+
+  test("arithmetic joins a continuation like the shell does", () => {
+    // bash -c 'echo $((1\<newline>+2))' prints 3
+    const expansion = (parseShell("echo $((1\\\n+2))").commands[0] as any).commands[0].args[0].parts[0];
+    expect(expansion.parsed).not.toBeNull();
+    expect(expansion.parsed.op).toBe("+");
+  });
+
+  test("(( )) split by a continuation is arithmetic, not subshells", () => {
+    // bash -c '((x=1\<newline>+2)); echo $x' prints 3
+    const cmd = (parseShell("((x=1\\\n+2))").commands[0] as any).commands[0];
+    expect(cmd.type).toBe("ArithmeticCommand");
+    expect(cmd.parsed).not.toBeNull();
+  });
+
+  test("a let operand's ranges survive a continuation", () => {
+    const src = "let x=1\\\n+2";
+    const expr = (parseShell(src).commands[0] as any).commands[0].expressions[0];
+    const two = expr.parsed.value.right;
+    expect(src.slice(two.range.start, two.range.end)).toBe("2");
+  });
+
+  test("a regex operand joins a continuation", () => {
+    // bash -c 's=ab; [[ $s =~ a\<newline>b ]] && echo yes' prints yes
+    const regex = (parseShell("[[ $s =~ a\\\nb$v ]]").commands[0] as any).commands[0].expression.regex;
+    expect(JSON.stringify(regex)).not.toContain("RegexEscape");
+    expect(regex.items[0].value).toBe("a");
+    expect(regex.items[1].value).toBe("b");
+  });
+});
+
+describe("the closing brace of an expansion", () => {
+  const zsh = (src: string) => parseShell(src, { dialect: "zsh" });
+  const first = (src: string) => (zsh(src).commands[0] as any).commands[0];
+
+  test("bash closes at the first unquoted }", () => {
+    // bash -c 'y=Q; [[ "Qc}" =~ ^${y:-a{b}c}$ ]]' matches: the default value is
+    // a{b, and c} is literal text outside the expansion
+    const parts = (parseShell("echo ${x:-a{b}c}").commands[0] as any).commands[0].args[0].parts;
+    expect(parts[0].expression).toBe("x:-a{b");
+    expect(parts[1].value).toBe("c}");
+  });
+
+  test("zsh nests braces in an unquoted expansion", () => {
+    // zsh -c 'y=Q; [[ "Q" =~ ^${y:-a{ }b}$ ]]' matches: the whole braced run
+    // is the default value
+    const parts = first("echo ${x:-a{b}c}").args[0].parts;
+    expect(parts.length).toBe(1);
+    expect(parts[0].expression).toBe("x:-a{b}c");
+  });
+
+  test("zsh inside double quotes closes like bash", () => {
+    // zsh -c 'x=v; printf "[%s]\n" "${x:-{}}"' prints [v}]
+    const parts = first('echo "${x:-a{b}c}"').args[0].parts;
+    expect(parts[0].expression).toBe("x:-a{b");
+  });
+
+  test("a zsh word swallows a space inside nested braces", () => {
+    // zsh -c 'x=v; printf "[%s]\n" ${x:-{ } q}' prints [v] — one argument —
+    // where bash prints [v] and [q}], two
+    const cmd = first("printf %s ${x:-{ } q}");
+    expect(cmd.args.length).toBe(2);
+    expect(cmd.args[1].parts[0].expression).toBe("x:-{ } q");
+
+    const bashCmd = (parseShell("printf %s ${x:-{ } q}").commands[0] as any).commands[0];
+    expect(bashCmd.args.length).toBe(3);
+    expect(bashCmd.args[1].parts[0].expression).toBe("x:-{ ");
+    expect(bashCmd.args[2].parts[0].value).toBe("q}");
+  });
+
+  test("arithmetic closes at the first } in both dialects", () => {
+    // bash and zsh both reject $(( ${x:-{}} + 1 )): the expansion ends at the
+    // first }, and the one left over is no arithmetic operator
+    for (const dialect of ["bash", "zsh"] as const) {
+      const expansion = (parseShell("echo $(( ${x:-{}} + 1 ))", { dialect }).commands[0] as any)
+        .commands[0].args[0].parts[0];
+      expect(expansion.parsed).toBeNull();
+    }
+  });
+
+  test("a regex operand follows its dialect", () => {
+    const src = "[[ $s =~ ^${y:-a{b}c}$ ]]";
+    const expansionIn = (regex: any) => regex.items.find((i: any) => i.type === "RegexExpansion");
+
+    const bashRegex = (parseShell(src).commands[0] as any).commands[0].expression.regex;
+    expect(expansionIn(bashRegex).part.expression).toBe("y:-a{b");
+
+    const zshRegex = first(src).expression.regex;
+    expect(expansionIn(zshRegex).part.expression).toBe("y:-a{b}c");
+  });
+
+  test("a quoted ) does not close a zsh pattern group", () => {
+    // zsh -c 'x="a)b"; [[ $x == ("a)b"|c) ]] && echo yes' prints yes
+    const group = first('[[ $x == ("a)b"|c) ]]').expression.right.parts[0];
+    expect(group.alternatives.length).toBe(2);
+    expect(group.alternatives[0].parts[0].value).toBe("a)b");
   });
 });
 
