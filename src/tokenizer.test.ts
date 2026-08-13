@@ -186,3 +186,186 @@ describe("tokenizer", () => {
     expect(tokens[tokens.length - 1]!.type).toBe(TokenType.EOF);
   });
 });
+
+describe("assignment-like words that are not assignments", () => {
+  test("a + elsewhere in the name is not an assignment", () => {
+    expect(tokenize("a+b=c")[0]!.type).toBe(TokenType.Word);
+  });
+
+  test("+= with no name is not an assignment", () => {
+    expect(tokenize("+=x")[0]!.type).toBe(TokenType.Word);
+  });
+
+  test("a name that is not an identifier stays a word", () => {
+    expect(tokenize("[0]=x")[0]!.type).toBe(TokenType.Word);
+    expect(tokenize("file[0].txt=x")[0]!.type).toBe(TokenType.Word);
+  });
+});
+
+describe("delimiters inside quotes", () => {
+  test("a quoted ) does not end a command substitution", () => {
+    expect(values('echo $(grep ")" f)')).toEqual(["echo", '$(grep ")" f)', ""]);
+  });
+
+  test("a single-quoted ) does not end a command substitution", () => {
+    expect(values("echo $(grep ')' f)")).toEqual(["echo", "$(grep ')' f)", ""]);
+  });
+
+  test("a substitution inside double quotes keeps its own quotes", () => {
+    expect(values('echo "$(grep ")" f)"')).toEqual(["echo", '"$(grep ")" f)"', ""]);
+  });
+
+  test("arithmetic keeps nested parens and consumes both closers", () => {
+    expect(values("echo $((a+(b*c)))")).toEqual(["echo", "$((a+(b*c)))", ""]);
+  });
+
+  test("a backtick substitution inside double quotes", () => {
+    expect(values('echo "`grep ")" f`"')).toEqual(["echo", '"`grep ")" f`"', ""]);
+  });
+
+  test("an escaped ) does not end a command substitution", () => {
+    expect(values("echo $(echo \\) done)")).toEqual(["echo", "$(echo \\) done)", ""]);
+  });
+
+  test("a quoted ) does not end a process substitution", () => {
+    expect(values('diff <(grep ")" a) b')).toEqual(["diff", '<(grep ")" a)', "b", ""]);
+  });
+});
+
+describe("comments", () => {
+  test("# mid-word is an ordinary character", () => {
+    expect(values("echo a#b")).toEqual(["echo", "a#b", ""]);
+  });
+
+  test("# at word start still opens a comment", () => {
+    expect(tokenize("echo a #b").filter(t => t.type === TokenType.Comment).map(t => t.value)).toEqual(["#b"]);
+  });
+
+  test("a fragment URL survives as one assignment", () => {
+    const toks = tokenize("url=http://x#frag");
+    expect(toks[0]!.type).toBe(TokenType.Assignment);
+    expect(toks[0]!.value).toBe("url=http://x#frag");
+  });
+
+  test("a comment inside $( ) does not end the substitution", () => {
+    expect(values("echo $(echo hi # )")).toEqual(["echo", "$(echo hi # )", ""]);
+  });
+
+  test("a comment inside <( ) does not end it either", () => {
+    expect(values("diff <(ls # )")).toEqual(["diff", "<(ls # )", ""]);
+  });
+
+  test("a quoted # inside a substitution is not a comment", () => {
+    expect(values("echo $(echo '#')")).toEqual(["echo", "$(echo '#')", ""]);
+  });
+});
+
+describe("redirects after a compound command", () => {
+  test("redirection still works after the test ends", () => {
+    const redirects = tokenize("[[ a < b ]]; cat <f").filter(t => t.type === TokenType.Redirect);
+    expect(redirects.map(t => t.value)).toEqual(["<"]);
+  });
+});
+
+describe("the zsh dialect", () => {
+  test("repeat is a keyword only in zsh", () => {
+    expect(tokenize("repeat 3 do :; done", { dialect: "zsh" })[0]!.type).toBe(TokenType.Keyword);
+    expect(tokenize("repeat 3", { dialect: "bash" })[0]!.type).toBe(TokenType.Word);
+  });
+
+  test("a glob qualifier group stays inside its word", () => {
+    const vals = tokenize("print *(.)", { dialect: "zsh" })
+      .filter(t => t.type !== TokenType.EOF)
+      .map(t => t.value);
+    expect(vals).toEqual(["print", "*(.)"]);
+  });
+
+  test("a numeric range stays inside its word", () => {
+    const tokens = tokenize("echo <1->", { dialect: "zsh" });
+    expect(tokens[1]!.type).toBe(TokenType.Word);
+    expect(tokens[1]!.value).toBe("<1->");
+  });
+
+  test("$#name inside arithmetic is read as one length operand under zsh", () => {
+    // zsh -c 'arr=(a b c); echo $(( $#arr + 1 ))' prints 4 — this only tokenizes
+    // as one Arithmetic token when the trial parse reads $#arr as a single
+    // operand, which needs the dialect threaded into the expansion-extent reader.
+    const tokens = tokenize("(( $#arr + 1 ))", { dialect: "zsh" }).filter(t => t.type !== TokenType.EOF);
+    expect(tokens.length).toBe(1);
+    expect(tokens[0]!.type).toBe(TokenType.Arithmetic);
+  });
+
+  test("case terminator ;| is read as one operator", () => {
+    const vals = tokenize("case $x in a) echo hi;| esac", { dialect: "zsh" }).map(t => t.value);
+    expect(vals).toContain(";|");
+  });
+});
+
+describe("heredoc delimiter spelling", () => {
+  test("EOF, 'EOF', \"EOF\", and \\EOF all keep their spelling in the delimiter token", () => {
+    for (const [open, expectedValue] of [
+      ["<<EOF", "EOF"],
+      ["<<'EOF'", "'EOF'"],
+      ['<<"EOF"', '"EOF"'],
+      ["<<\\EOF", "\\EOF"],
+    ] as const) {
+      const tokens = tokenize(`cat ${open}\nbody\nEOF\n`);
+      expect(tokens[1]!.type).toBe(TokenType.Redirect);
+      expect(tokens[2]!.type).toBe(TokenType.Word);
+      expect(tokens[2]!.value).toBe(expectedValue);
+    }
+  });
+
+  test("<<- is a distinct redirect operator from <<", () => {
+    const tokens = tokenize("cat <<-EOF\n\tbody\n\tEOF\n");
+    expect(tokens[1]!.type).toBe(TokenType.Redirect);
+    expect(tokens[1]!.value).toBe("<<-");
+  });
+
+  test("the heredoc token sequence: Word, Redirect, Word, Newline, HereDocBody", () => {
+    const seq = types("cat <<EOF\nbody\nEOF\n");
+    expect(seq.slice(0, 5)).toEqual([
+      TokenType.Word,
+      TokenType.Redirect,
+      TokenType.Word,
+      TokenType.Newline,
+      TokenType.HereDocBody,
+    ]);
+  });
+});
+
+describe("heredocs and here-strings inside substitutions", () => {
+  test("a ) in the body does not close the substitution", () => {
+    const src = "x=$(cat <<EOF\na ) b\nEOF\n)";
+    expect(values(src)).toEqual([src, ""]);
+  });
+
+  test("an unbalanced quote in the body is inert", () => {
+    const src = 'x=$(cat <<EOF\nits " odd\nEOF\n)';
+    expect(values(src)).toEqual([src, ""]);
+  });
+
+  test("<<- bodies are skipped inside a substitution", () => {
+    const src = "x=$(cat <<-EOF\n\tindented )\n\tEOF\n)";
+    expect(values(src)).toEqual([src, ""]);
+  });
+
+  test("a quoted delimiter's body is still skipped whole", () => {
+    const src = "x=$(cat <<'EOF'\n$(nope)\nEOF\n)";
+    expect(values(src)).toEqual([src, ""]);
+  });
+
+  test("two heredocs in one substitution keep their own bodies", () => {
+    const src = "x=$(cat <<A <<B\none )\nA\ntwo )\nB\n)";
+    expect(values(src)).toEqual([src, ""]);
+  });
+
+  test("a heredoc inside a process substitution", () => {
+    const src = "diff <(cat <<EOF\n)\nEOF\n) b";
+    expect(values(src)).toEqual(["diff", "<(cat <<EOF\n)\nEOF\n)", "b", ""]);
+  });
+
+  test("<<< is a here-string, not a heredoc", () => {
+    expect(values("x=$(echo <<<here)")).toEqual(["x=$(echo <<<here)", ""]);
+  });
+});

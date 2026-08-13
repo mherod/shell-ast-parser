@@ -1,6 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import { parseShell, parse, ParseError, tokenize, TokenType } from "../index.ts";
-import type { Dialect, IfClause } from "../src/ast.ts";
+import type { Dialect, IfClause, ProcessSubstitution } from "../src/ast.ts";
 
 function parseCmd(src: string) {
   const script = parseShell(src);
@@ -14,6 +14,19 @@ function firstIfClause(src: string, dialect: Dialect = "bash"): IfClause {
   const [inner] = command.commands;
   if (inner === undefined || inner.type !== "IfClause") throw new Error(`expected an IfClause, got ${inner?.type}`);
   return inner;
+}
+
+/** Narrow the first arg-part of the first command down to a `ProcessSubstitution`. */
+function firstProcessSubstitution(src: string): ProcessSubstitution {
+  const [command] = parseShell(src).commands;
+  if (command === undefined || command.type !== "Pipeline") throw new Error(`expected a Pipeline, got ${command?.type}`);
+  const [inner] = command.commands;
+  if (inner === undefined || inner.type !== "SimpleCommand") throw new Error(`expected a SimpleCommand, got ${inner?.type}`);
+  const [firstArg] = inner.args;
+  if (firstArg === undefined || firstArg.type !== "CompoundWord") throw new Error(`expected a CompoundWord arg, got ${firstArg?.type}`);
+  const [firstPart] = firstArg.parts;
+  if (firstPart === undefined || firstPart.type !== "ProcessSubstitution") throw new Error(`expected a ProcessSubstitution part, got ${firstPart?.type}`);
+  return firstPart;
 }
 
 describe("parser", () => {
@@ -478,13 +491,6 @@ describe("append assignments", () => {
     expect(a.value).toBeNull();
   });
 
-  test("a + elsewhere in the name is not an assignment", () => {
-    expect(tokenize("a+b=c")[0]!.type).toBe(TokenType.Word);
-  });
-
-  test("+= with no name is not an assignment", () => {
-    expect(tokenize("+=x")[0]!.type).toBe(TokenType.Word);
-  });
 });
 
 describe("quoting", () => {
@@ -618,17 +624,11 @@ describe("quoting", () => {
 });
 
 describe("delimiters inside quotes", () => {
-  const words = (src: string) => tokenize(src).filter(t => t.type !== TokenType.EOF).map(t => t.value);
   const parts = (src: string) => (parseShell(src).commands[0] as any).commands[0].args[0].parts;
 
   test("a quoted ) does not end a command substitution", () => {
-    expect(words('echo $(grep ")" f)')).toEqual(["echo", '$(grep ")" f)']);
     const inner = parts('echo $(grep ")" f)')[0].body.commands[0].commands[0];
     expect(inner.args.map((a: any) => a.parts[0].value)).toEqual([")", "f"]);
-  });
-
-  test("a single-quoted ) does not end a command substitution", () => {
-    expect(words("echo $(grep ')' f)")).toEqual(["echo", "$(grep ')' f)"]);
   });
 
   test("a quoted } does not end a parameter expansion", () => {
@@ -636,24 +636,10 @@ describe("delimiters inside quotes", () => {
   });
 
   test("a substitution inside double quotes keeps its own quotes", () => {
-    expect(words('echo "$(grep ")" f)"')).toEqual(["echo", '"$(grep ")" f)"']);
     expect(parts('echo "$(grep ")" f)"')[0].type).toBe("CommandSubstitution");
   });
 
-  test("a backtick substitution inside double quotes", () => {
-    expect(words('echo "`grep ")" f`"')).toEqual(["echo", '"`grep ")" f`"']);
-  });
-
-  test("an escaped ) does not end a command substitution", () => {
-    expect(words("echo $(echo \\) done)")).toEqual(["echo", "$(echo \\) done)"]);
-  });
-
-  test("a quoted ) does not end a process substitution", () => {
-    expect(words('diff <(grep ")" a) b')).toEqual(["diff", '<(grep ")" a)', "b"]);
-  });
-
   test("arithmetic keeps nested parens and consumes both closers", () => {
-    expect(words("echo $((a+(b*c)))")).toEqual(["echo", "$((a+(b*c)))"]);
     const part = parts("echo $((a+(b*c)))")[0];
     expect(part.type).toBe("ArithmeticExpansion");
     expect(part.expression).toBe("a+(b*c)");
@@ -671,39 +657,11 @@ describe("delimiters inside quotes", () => {
 });
 
 describe("comments", () => {
-  const words = (src: string) => tokenize(src).filter(t => t.type !== TokenType.EOF).map(t => t.value);
-
-  test("# mid-word is an ordinary character", () => {
-    expect(words("echo a#b")).toEqual(["echo", "a#b"]);
-  });
-
-  test("# at word start still opens a comment", () => {
-    expect(tokenize("echo a #b").filter(t => t.type === TokenType.Comment).map(t => t.value)).toEqual(["#b"]);
-  });
-
-  test("a fragment URL survives as one assignment", () => {
-    const toks = tokenize("url=http://x#frag").filter(t => t.type !== TokenType.EOF);
-    expect(toks[0]!.type).toBe(TokenType.Assignment);
-    expect(toks[0]!.value).toBe("url=http://x#frag");
-  });
-
-  test("a comment inside $( ) does not end the substitution", () => {
-    expect(words("echo $(echo hi # )")).toEqual(["echo", "$(echo hi # )"]);
-  });
-
-  test("a comment inside <( ) does not end it either", () => {
-    expect(words("diff <(ls # )")).toEqual(["diff", "<(ls # )"]);
-  });
-
   test("# stays an operator inside ${ }", () => {
     const part = (src: string) => (parseShell(src).commands[0] as any).commands[0].args[0].parts[0];
     expect(part("echo ${#NAME}").expression).toBe("#NAME");
     expect(part("echo ${NAME#pre}").expression).toBe("NAME#pre");
     expect(part("echo ${NAME##pre}").expression).toBe("NAME##pre");
-  });
-
-  test("a quoted # inside a substitution is not a comment", () => {
-    expect(words("echo $(echo '#')")).toEqual(["echo", "$(echo '#')"]);
   });
 });
 
@@ -733,10 +691,6 @@ describe("subscripted assignment", () => {
     expect(assignment("PLAIN=x").subscript).toBeNull();
   });
 
-  test("a name that is not an identifier stays a word", () => {
-    expect(tokenize("[0]=x")[0]!.type).toBe(TokenType.Word);
-    expect(tokenize("file[0].txt=x")[0]!.type).toBe(TokenType.Word);
-  });
 });
 
 describe("declaration builtins", () => {
@@ -824,32 +778,27 @@ describe("glob patterns", () => {
 });
 
 describe("heredocs inside substitutions", () => {
-  const words = (src: string) => tokenize(src).filter(t => t.type !== TokenType.EOF).map(t => t.value);
   const substitution = (src: string) =>
     (parseShell(src).commands[0] as any).commands[0].assignments[0].value.parts[0];
   const inner = (src: string) => substitution(src).body.commands[0].commands[0];
 
   test("a ) in the body does not close the substitution", () => {
     const src = "x=$(cat <<EOF\na ) b\nEOF\n)";
-    expect(words(src)).toEqual([src]);
     expect(inner(src).redirects[0].target.content).toBe("a ) b\n");
   });
 
   test("an unbalanced quote in the body is inert", () => {
     const src = 'x=$(cat <<EOF\nits " odd\nEOF\n)';
-    expect(words(src)).toEqual([src]);
     expect(inner(src).redirects[0].target.content).toBe('its " odd\n');
   });
 
   test("<<- bodies are skipped and stripTabs is recorded", () => {
     const src = "x=$(cat <<-EOF\n\tindented )\n\tEOF\n)";
-    expect(words(src)).toEqual([src]);
     expect(inner(src).redirects[0].target.stripTabs).toBe(true);
   });
 
   test("a quoted delimiter still suppresses expansion", () => {
     const src = "x=$(cat <<'EOF'\n$(nope)\nEOF\n)";
-    expect(words(src)).toEqual([src]);
     const target = inner(src).redirects[0].target;
     expect(target.quoted).toBe(true);
     expect(target.content).toBe("$(nope)\n");
@@ -857,7 +806,6 @@ describe("heredocs inside substitutions", () => {
 
   test("two heredocs in one substitution keep their own bodies", () => {
     const src = "x=$(cat <<A <<B\none )\nA\ntwo )\nB\n)";
-    expect(words(src)).toEqual([src]);
     expect(inner(src).redirects.map((r: any) => r.target.content)).toEqual(["one )\n", "two )\n"]);
   });
 
@@ -875,11 +823,8 @@ describe("heredocs inside substitutions", () => {
 
   test("a heredoc inside a process substitution", () => {
     const src = "diff <(cat <<EOF\n)\nEOF\n) b";
-    expect(words(src)).toEqual(["diff", "<(cat <<EOF\n)\nEOF\n)", "b"]);
-  });
-
-  test("<<< is a here-string, not a heredoc", () => {
-    expect(words("x=$(echo <<<here)")).toEqual(["x=$(echo <<<here)"]);
+    const procSub = firstProcessSubstitution(src);
+    expect(procSub.body.commands.length).toBe(1);
   });
 
   test("<< is left-shift in arithmetic, not a heredoc", () => {
@@ -1261,11 +1206,6 @@ describe("test expressions", () => {
     const cmd = command("[[ -f x ]] > out.txt");
     expect(cmd.redirects.length).toBe(1);
     expect(cmd.redirects[0].op).toBe(">");
-  });
-
-  test("redirection still works after the test ends", () => {
-    const words = tokenize("[[ a < b ]]; cat <f").filter(t => t.type !== TokenType.EOF);
-    expect(words.filter(t => t.type === TokenType.Redirect).map(t => t.value)).toEqual(["<"]);
   });
 
   test("a glob in a pattern operand survives", () => {
