@@ -40,7 +40,7 @@ const OPERATORS = [
 export type ExpansionReader = (text: string, pos: number) => { part: WordPart; next: number } | null;
 
 /** Arithmetic that does not fit the grammar — the caller keeps the raw text */
-export class ArithmeticSyntaxError extends Error {}
+class ArithmeticSyntaxError extends Error {}
 
 interface Tok {
   kind: "number" | "name" | "op" | "expansion";

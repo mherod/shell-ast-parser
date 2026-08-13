@@ -1,4 +1,5 @@
-import type { GlobBracketMember, Range, RegexNode, WordPart } from "./ast.ts";
+import type { GlobBracketMember, Range, RegexNode } from "./ast.ts";
+import type { ExpansionReader } from "./arithmetic.ts";
 
 /**
  * Parser for the POSIX extended regular expressions that follow `=~`.
@@ -10,7 +11,7 @@ import type { GlobBracketMember, Range, RegexNode, WordPart } from "./ast.ts";
  */
 export interface RegexContext {
   /** Resolve a `$…` expansion; the pattern it holds is not known statically */
-  readExpansion: (text: string, pos: number) => { part: WordPart; next: number } | null;
+  readExpansion: ExpansionReader;
   /** Read a `[…]` bracket expression, which is the same syntax globs use */
   readBracket: (text: string, pos: number) => { negated: boolean; members: GlobBracketMember[]; next: number } | null;
 }
