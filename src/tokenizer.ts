@@ -1,5 +1,5 @@
 import { parseArithmetic } from "./arithmetic.ts";
-import type { Dialect, ParseOptions } from "./ast.ts";
+import type { Dialect, ParseOptions, Range } from "./ast.ts";
 import {
   EXTGLOB_LEADS,
   isWhitespace,
@@ -39,7 +39,7 @@ export enum TokenType {
 export interface Token {
   type: TokenType;
   value: string;
-  range: { start: number; end: number };
+  range: Range;
   /**
    * Value indexes where a line continuation was dropped. Each entry marks a
    * backslash-newline pair present in the source but not in `value`, so a

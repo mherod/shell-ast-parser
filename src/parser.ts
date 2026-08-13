@@ -2,7 +2,7 @@ import type {
   Script, Command, SimpleCommand, Pipeline, ListItem,
   CompoundWord, WordPart, Redirect, HereDoc, Assignment, ArrayLiteral, Range, QuoteContext,
   GlobBracketMember,
-  IfClause, ForClause, ArithmeticForClause, ArithmeticCommand, ArithmeticExpr,
+  IfClause, ElifBranch, ForClause, ArithmeticForClause, ArithmeticCommand, ArithmeticExpr,
   LetCommand, LetExpression, TestCommand, TestExpr, RegexNode,
   WhileClause, UntilClause, RepeatClause, CaseClause, CaseItem,
   Subshell, BraceGroup, FunctionDef, Comment, Coproc,
@@ -910,13 +910,15 @@ export class Parser {
   private parseBraceIf(start: number, condition: Script): IfClause {
     const thenBody = this.wrapScript([this.parseBraceGroup()]);
 
-    const elifs: { condition: Script; then: Script }[] = [];
+    const elifs: ElifBranch[] = [];
     this.skipNewlines();
     while (this.atWord("elif")) {
+      const elifStart = this.peek().range.start;
       this.advance();
       this.skipNewlines();
       const elifCond = this.wrapScript(this.parseCompoundList(false, true));
-      elifs.push({ condition: elifCond, then: this.wrapScript([this.parseBraceGroup()]) });
+      const elifThen = this.wrapScript([this.parseBraceGroup()]);
+      elifs.push({ type: "ElifBranch", condition: elifCond, then: elifThen, range: { start: elifStart, end: this.lastEnd(elifStart) } });
       this.skipNewlines();
     }
 
@@ -957,15 +959,16 @@ export class Parser {
     this.skipNewlines();
     const thenBody = this.wrapScript(this.parseCompoundList());
 
-    const elifs: { condition: Script; then: Script }[] = [];
+    const elifs: ElifBranch[] = [];
     while (this.atWord("elif")) {
+      const elifStart = this.peek().range.start;
       this.advance();
       this.skipNewlines();
       const elifCond = this.wrapScript(this.parseCompoundList());
       this.expectWord("then");
       this.skipNewlines();
       const elifBody = this.wrapScript(this.parseCompoundList());
-      elifs.push({ condition: elifCond, then: elifBody });
+      elifs.push({ type: "ElifBranch", condition: elifCond, then: elifBody, range: { start: elifStart, end: this.lastEnd(elifStart) } });
     }
 
     let elseBody: Script | null = null;
@@ -1006,6 +1009,7 @@ export class Parser {
       const tok = this.advance();
       const { text, offset } = unwrapQuotes(tokenSourceText(tok));
       expressions.push({
+        type: "LetExpression",
         text,
         parsed: this.parseArithmeticText(text, tok.range.start + offset),
         range: tok.range,

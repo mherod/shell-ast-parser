@@ -1,9 +1,19 @@
 import { test, expect, describe } from "bun:test";
 import { parseShell, parse, ParseError, tokenize, TokenType } from "../index.ts";
+import type { Dialect, IfClause } from "../src/ast.ts";
 
 function parseCmd(src: string) {
   const script = parseShell(src);
   return script.commands;
+}
+
+/** Narrow the first command of a script down to an `IfClause`, unwrapping the `Pipeline` layer parseCmd leaves in place. */
+function firstIfClause(src: string, dialect: Dialect = "bash"): IfClause {
+  const [command] = parseShell(src, { dialect }).commands;
+  if (command === undefined || command.type !== "Pipeline") throw new Error(`expected a Pipeline, got ${command?.type}`);
+  const [inner] = command.commands;
+  if (inner === undefined || inner.type !== "IfClause") throw new Error(`expected an IfClause, got ${inner?.type}`);
+  return inner;
 }
 
 describe("parser", () => {
@@ -69,6 +79,19 @@ fi
     expect(ifCmd.type).toBe("IfClause");
     expect(ifCmd.elifs.length).toBe(1);
     expect(ifCmd.else).not.toBeNull();
+  });
+
+  test("elif branches carry a type and a source-accurate range", () => {
+    const src = "if a; then b; elif c; then d; else e; fi";
+    const ifCmd = firstIfClause(src);
+    const elif = ifCmd.elifs[0]!;
+    const elifText = src.slice(elif.range.start, elif.range.end);
+
+    expect(elif.type).toBe("ElifBranch");
+    expect(elifText.startsWith("elif")).toBe(true);
+    expect(elifText).not.toContain("else");
+    expect(elif.condition.range.start).toBeGreaterThanOrEqual(elif.range.start);
+    expect(elif.then.range.end).toBeLessThanOrEqual(elif.range.end);
   });
 
   test("for loop", () => {
@@ -2117,6 +2140,17 @@ describe("more of the zsh dialect", () => {
     const clause = first("if (( EUID == 0 )) { echo root }");
     expect(clause.type).toBe("IfClause");
     expect(clause.then.commands[0].type).toBe("BraceGroup");
+  });
+
+  test("a brace-form elif also carries a type and a source-accurate range", () => {
+    const src = "if a { b } elif c { d } else { e }";
+    const ifCmd = firstIfClause(src, "zsh");
+    const elif = ifCmd.elifs[0]!;
+    const elifText = src.slice(elif.range.start, elif.range.end);
+
+    expect(elif.type).toBe("ElifBranch");
+    expect(elifText.startsWith("elif")).toBe(true);
+    expect(elifText).not.toContain("else");
   });
 
   test("a brace group can still be the condition itself", () => {

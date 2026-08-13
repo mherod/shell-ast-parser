@@ -412,11 +412,19 @@ export interface BraceGroup {
 
 // ── Compound commands ──────────────────────────────────────────────
 
+/** One `elif condition; then …` branch of an `IfClause` */
+export interface ElifBranch {
+  type: "ElifBranch";
+  condition: Script;
+  then: Script;
+  range: Range;
+}
+
 export interface IfClause {
   type: "IfClause";
   condition: Script;
   then: Script;
-  elifs: { condition: Script; then: Script }[];
+  elifs: ElifBranch[];
   else: Script | null;
   redirects: Redirect[];
   range: Range;
@@ -634,6 +642,7 @@ export interface TestCommand {
 
 /** One argument of `let`, which the shell evaluates as arithmetic */
 export interface LetExpression {
+  type: "LetExpression";
   /** the argument with any wrapping quotes removed */
   text: string;
   parsed: ArithmeticExpr | null;
