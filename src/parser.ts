@@ -9,7 +9,7 @@ import type {
   Dialect, ParseOptions,
 } from "./ast.ts";
 import { tokenize, splitArithmeticClauses, type Token, TokenType } from "./tokenizer.ts";
-import { EXTGLOB_LEADS, matchDelimiter, readBalanced, readExpansionExtent, skipQuoted } from "./scan.ts";
+import { EXTGLOB_LEADS, matchDelimiter, readBalanced, readExpansionExtent, readHereDocDelimiter, skipQuoted } from "./scan.ts";
 import { parseArithmetic } from "./arithmetic.ts";
 import { parseRegex } from "./regex.ts";
 
@@ -861,15 +861,10 @@ export class Parser {
     // For heredoc, create a HereDoc target
     if (opPart === "<<" || opPart === "<<-") {
       const delimTok = this.expect(TokenType.Word);
-      const quote = delimTok.value[0];
-      // `<<'EOF'`, `<<"EOF"` and `<<\EOF` all name EOF and all suppress
-      // expansion in the body; only the spelling differs
-      const wrapped = (quote === "'" || quote === '"') && delimTok.value.endsWith(quote) && delimTok.value.length >= 2;
-      const escaped = delimTok.value.includes("\\");
-      const quoted = wrapped || escaped;
+      const { delimiter, quoted } = readHereDocDelimiter(delimTok.value, 0);
       const target: HereDoc = {
         type: "HereDoc",
-        delimiter: wrapped ? delimTok.value.slice(1, -1) : delimTok.value.replace(/\\(.)/g, "$1"),
+        delimiter,
         content: "",
         stripTabs: opPart === "<<-",
         quoted,

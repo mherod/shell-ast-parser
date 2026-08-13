@@ -93,10 +93,9 @@ export function splitArithmeticClauses(text: string): { text: string; offset: nu
   return clauses;
 }
 
-export interface PendingHereDoc {
+interface PendingHereDoc {
   delimiter: string;
   stripTabs: boolean;
-  quoted: boolean;
 }
 
 export class Tokenizer {
@@ -437,7 +436,7 @@ export class Tokenizer {
             range: { start: delimStart, end: this.pos },
           });
 
-          this.pendingHereDocs.push({ delimiter, stripTabs, quoted });
+          this.pendingHereDocs.push({ delimiter, stripTabs });
           return;
         }
       }
