@@ -117,6 +117,8 @@ class Tokenizer {
   private afterTimeKeyword: boolean = false;
   /** Plain parentheses currently delimiting an array assignment's values. */
   private arrayLiteralDepth: number = 0;
+  /** Command-position state to restore after reading one redirect operand. */
+  private commandStartBeforeRedirectTarget: boolean | null = null;
   private dialect: Dialect;
   /**
    * Functions defined so far. A function shadows a builtin of the same name
@@ -403,7 +405,7 @@ class Tokenizer {
       value: op,
       range: { start, end: this.pos },
     });
-    this.atCommandStart = false;
+    this.beginRedirectTarget();
   }
 
   private readRedirectOrProcessSub(): void {
@@ -455,7 +457,7 @@ class Tokenizer {
             value: op,
             range: { start, end: this.pos },
           });
-          this.atCommandStart = false;
+          this.beginRedirectTarget();
 
           // Read the delimiter with the same reader the nested scanners use, so
           // the two cannot disagree about what ends a body
@@ -473,6 +475,7 @@ class Tokenizer {
           });
 
           this.pendingHereDocs.push({ delimiter, stripTabs });
+          this.finishRedirectTarget();
           return;
         }
       }
@@ -485,7 +488,18 @@ class Tokenizer {
       value: op,
       range: { start, end: this.pos },
     });
+    this.beginRedirectTarget();
+  }
+
+  private beginRedirectTarget(): void {
+    this.commandStartBeforeRedirectTarget = this.atCommandStart;
     this.atCommandStart = false;
+  }
+
+  private finishRedirectTarget(): void {
+    const commandStart = this.commandStartBeforeRedirectTarget;
+    this.commandStartBeforeRedirectTarget = null;
+    if (commandStart !== null) this.atCommandStart = commandStart;
   }
 
   private consumePendingHereDocs(): void {
@@ -695,8 +709,10 @@ class Tokenizer {
 
     if (value === "") return;
 
+    const isRedirectTarget = this.commandStartBeforeRedirectTarget !== null;
+
     // Check for [[ keyword (two chars)
-    if (value === "[[" || value === "]]") {
+    if (!isRedirectTarget && (value === "[[" || value === "]]")) {
       this.tokens.push({
         type: TokenType.Keyword,
         value,
@@ -728,7 +744,8 @@ class Tokenizer {
     // Assignment: NAME=, NAME+=, NAME[sub]=, NAME[sub]+=
     // Valid at command start, and after a declaration builtin, where the
     // assignment is an argument: `declare -a X=(1 2)`
-    if (hasEquals && equalsPos > 0 && (this.atCommandStart || this.inDeclarationCommand)) {
+    if (!isRedirectTarget && hasEquals && equalsPos > 0 &&
+        (this.atCommandStart || this.inDeclarationCommand)) {
       const name = value.slice(0, equalsPos);
       if (/^[a-zA-Z_][a-zA-Z0-9_]*(\[[^\]]+\])?\+?$/.test(name)) {
         this.tokens.push({
@@ -753,6 +770,12 @@ class Tokenizer {
       ...(joins.length > 0 ? { joins } : {}),
       ...(unterminated ? { unterminated: true as const } : {}),
     });
+
+    if (isRedirectTarget) {
+      this.finishRedirectTarget();
+      return;
+    }
+
     this.atCommandStart = wasAfterTime && (value === "-p" || value === "--");
 
     if (afterFunctionKeyword) this.definedFunctions.add(value);

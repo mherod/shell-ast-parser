@@ -533,6 +533,25 @@ describe("function names with dots, dashes, and colons tokenization", () => {
 });
 
 describe("declaration builtins and assignment arguments", () => {
+  test.each([
+    ["output", ">out export X=1"],
+    ["combined-stream", "&>out export X=1"],
+    ["heredoc", "<<EOF export X=1\nbody\nEOF\n"],
+  ] as const)("a leading %s redirect preserves declaration command position", (_kind, source) => {
+    const assignment = tokenize(source).find(token => token.value === "X=1");
+
+    expect(assignment?.type).toBe(TokenType.Assignment);
+  });
+
+  test("an assignment-like redirect target stays data inside a declaration command", () => {
+    const tokens = tokenize("export >X=1 Y=2");
+    const redirectTarget = tokens.find(token => token.value === "X=1");
+    const declarationArgument = tokens.find(token => token.value === "Y=2");
+
+    expect(redirectTarget?.type).toBe(TokenType.Word);
+    expect(declarationArgument?.type).toBe(TokenType.Assignment);
+  });
+
   test("export allows multiple assignment arguments", () => {
     const tokens = tokenize("export FOO=1 BAR=2 BAZ=3").filter(t => t.type !== TokenType.EOF);
     expect(tokens[0]!.type).toBe(TokenType.Word);
