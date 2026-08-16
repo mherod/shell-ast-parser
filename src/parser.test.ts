@@ -2168,6 +2168,16 @@ describe("ranges survive a substitution's escapes", () => {
     expect(drifted("x=`sed -e 's/\\$(CC)//' \\\n  -e 's/x//'`")).toEqual([]);
   });
 
+  test("a nested backtick substitution keeps its ranges too", () => {
+    // The POSIX escaped-backtick nesting idiom: `\`` inside an outer backtick
+    // is a literal backtick, used to open/close an inner substitution without
+    // ending the outer one. Its own end boundary lands exactly on the outer
+    // map's entry for that escaped backtick — remapping it a second time (once
+    // by the inner parse, again by the outer) used to land one character past
+    // the real boundary, into the escape the inner remap had already resolved.
+    expect(drifted("x=`echo \\`echo hi\\` done`")).toEqual([]);
+  });
+
   test("a word inside backticks still slices back to itself", () => {
     const src = "x=`echo \\$(CC) -e b`";
     const sub = (parseShell(src).commands[0] as any).commands[0].assignments[0].value.parts[0];

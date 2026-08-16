@@ -322,6 +322,23 @@ function readParenBody(raw: string, openParen: number): { body: string; next: nu
  * and every position after an escape needs its own answer rather than a shift.
  * `map[i]` is where body position `i` sits in the original.
  */
+/**
+ * `end` is exclusive, so it resolves through the character just before it
+ * (index `pos - 1`) plus one — not through its own map slot. `map[pos]`
+ * answers "where does body-character `pos` live", which for an end position
+ * usually coincides with "where does the boundary right after `pos - 1`
+ * live", but not when a dropped backslash sits between them: the kept
+ * character at `pos` then lands one further along than that boundary. A
+ * nested substitution's own end, remapped once already, walks straight into
+ * this the moment its parent remaps the same tree again.
+ */
+function remapPos(pos: number, map: number[], isEnd: boolean): number {
+  if (isEnd && pos > 0) {
+    return (map[pos - 1] ?? map[map.length - 1] ?? pos - 1) + 1;
+  }
+  return map[pos] ?? map[map.length - 1] ?? pos;
+}
+
 function remapRanges(node: unknown, map: number[], seen: Set<object> = new Set()): void {
   if (node === null || typeof node !== "object" || seen.has(node)) return;
   seen.add(node);
@@ -335,8 +352,8 @@ function remapRanges(node: unknown, map: number[], seen: Set<object> = new Set()
     if (key === "range" && value !== null && typeof value === "object" && !seen.has(value)) {
       seen.add(value);
       const r = value as Range;
-      r.start = map[r.start] ?? map[map.length - 1] ?? r.start;
-      r.end = map[r.end] ?? map[map.length - 1] ?? r.end;
+      r.start = remapPos(r.start, map, false);
+      r.end = remapPos(r.end, map, true);
     } else {
       remapRanges(value, map, seen);
     }
