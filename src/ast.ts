@@ -443,6 +443,20 @@ export interface ForClause {
   range: Range;
 }
 
+/**
+ * `select name [in words]; do list; done` — reads a choice from stdin into
+ * `name` on each iteration, printing a numbered menu of `words` (or `$@` when
+ * the `in` list is omitted, hence `words: null` rather than an empty array).
+ */
+export interface SelectClause {
+  type: "SelectClause";
+  variable: string;
+  words: CompoundWord[] | null;
+  body: Script;
+  redirects: Redirect[];
+  range: Range;
+}
+
 // ── Test expressions ───────────────────────────────────────────────
 
 /** `-f file`, `-z "$x"` — a single-operand test */
@@ -754,6 +768,7 @@ export type CompoundCommand =
   | IfClause
   | ForClause
   | ArithmeticForClause
+  | SelectClause
   | WhileClause
   | UntilClause
   | RepeatClause

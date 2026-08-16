@@ -130,6 +130,28 @@ fi
     expect(cmd.type).toBe("UntilClause");
   });
 
+  test("select loop", () => {
+    const src = 'select choice in "Option 1" "Option 2" "Quit"; do echo "$choice"; break; done';
+    const select = firstOf(parseShell(src), "SelectClause");
+    if (select === null) throw new Error("expected a SelectClause node");
+    expect(select.variable).toBe("choice");
+    expect(select.words!.length).toBe(3);
+  });
+
+  test("select loop with an omitted in-list has words: null", () => {
+    const select = firstOf(parseShell('select choice; do echo "$choice"; done'), "SelectClause");
+    if (select === null) throw new Error("expected a SelectClause node");
+    expect(select.variable).toBe("choice");
+    expect(select.words).toBeNull();
+  });
+
+  test("trailing redirects on a select loop attach to SelectClause.redirects", () => {
+    const select = firstOf(parseShell("select x in a b; do echo $x; done > out.log"), "SelectClause");
+    if (select === null) throw new Error("expected a SelectClause node");
+    expect(select.redirects.length).toBe(1);
+    expect(select.redirects[0]!.op).toBe(">");
+  });
+
   test("case statement", () => {
     const script = parseShell(`case "$x" in
   hello) echo hi;;

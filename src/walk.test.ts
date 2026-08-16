@@ -9,7 +9,7 @@ import {
   isAstNode,
   isNodeType,
 } from "./walk.ts";
-import type { HereDoc, Word, SimpleCommand, IfClause, CompoundWord } from "./ast.ts";
+import type { HereDoc, Word, SimpleCommand, IfClause, SelectClause, CompoundWord } from "./ast.ts";
 
 describe("AST walker (src/walk.ts)", () => {
   test("findAll finds all nodes of matching type with type narrowing", () => {
@@ -31,6 +31,19 @@ describe("AST walker (src/walk.ts)", () => {
 
     const nonExistent = firstOf(script, "UntilClause");
     expect(nonExistent).toBeNull();
+  });
+
+  test("visit and findAll traverse into a SelectClause's body", () => {
+    const script = parseShell('select choice in a b; do echo "$choice"; done');
+    const select: SelectClause | null = firstOf(script, "SelectClause");
+    expect(select).not.toBeNull();
+    expect(select!.type).toBe("SelectClause");
+
+    // The body's command (echo "$choice") is reachable through the generic
+    // reflective walk, same as any other CompoundCommand's body — no
+    // per-type traversal registration exists or is needed for SelectClause.
+    const words: Word[] = findAll(select, "Word");
+    expect(words.map((w) => w.value)).toContain("echo");
   });
 
   test("visit traverses in depth-first pre-order and passes parent & key", () => {

@@ -10,6 +10,7 @@ import type {
   IfClause,
   ForClause,
   ArithmeticForClause,
+  SelectClause,
   WhileClause,
   UntilClause,
   RepeatClause,
@@ -82,6 +83,7 @@ export interface AstNodeMap {
   IfClause: IfClause;
   ForClause: ForClause;
   ArithmeticForClause: ArithmeticForClause;
+  SelectClause: SelectClause;
   WhileClause: WhileClause;
   UntilClause: UntilClause;
   RepeatClause: RepeatClause;

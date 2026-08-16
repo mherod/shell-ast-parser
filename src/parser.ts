@@ -2,7 +2,7 @@ import type {
   Script, Command, SimpleCommand, Pipeline, ListItem,
   CompoundWord, WordPart, Redirect, HereDoc, Assignment, ArrayLiteral, Range, QuoteContext,
   GlobBracketMember,
-  IfClause, ElifBranch, ForClause, ArithmeticForClause, ArithmeticCommand, ArithmeticExpr,
+  IfClause, ElifBranch, ForClause, ArithmeticForClause, SelectClause, ArithmeticCommand, ArithmeticExpr,
   LetCommand, LetExpression, TestCommand, TestExpr, RegexNode,
   WhileClause, UntilClause, RepeatClause, CaseClause, CaseItem,
   Subshell, BraceGroup, FunctionDef, Comment, Coproc,
@@ -650,6 +650,7 @@ class Parser {
       switch (tok.value) {
         case "if": return this.parseIf();
         case "for": return this.parseFor();
+        case "select": return this.parseSelect();
         case "while": return this.parseWhile();
         case "until": return this.parseUntil();
         case "repeat": return this.parseRepeat();
@@ -1164,6 +1165,41 @@ class Parser {
     return {
       type: "ForClause",
       variables,
+      words,
+      body,
+      redirects,
+      range: { start, end: redirects.length > 0 ? redirects[redirects.length - 1]!.range.end : end },
+    };
+  }
+
+  /** `select name [in words]; do list; done` — grammar mirrors `for`, minus its zsh extensions. */
+  private parseSelect(): SelectClause {
+    const start = this.expect(TokenType.Keyword, "select").range.start;
+    const variable = this.expect(TokenType.Word).value;
+
+    let words: CompoundWord[] | null = null;
+    this.skipNewlines();
+    if (this.peek().value === "in" && (this.at(TokenType.Keyword) || this.at(TokenType.Word))) {
+      this.advance();
+      words = [];
+      while (this.at(TokenType.Word)) {
+        words.push(this.tokenToCompoundWord(this.advance()));
+      }
+    }
+
+    // Skip optional ; or newline before do
+    if (this.atAny(TokenType.Operator, ";")) this.advance();
+    this.skipNewlines();
+
+    this.expectWord("do");
+    this.skipNewlines();
+    const body = this.wrapScript(this.parseCompoundList());
+    const end = this.expectWord("done").range.end;
+    const redirects = this.parseTrailingRedirects();
+
+    return {
+      type: "SelectClause",
+      variable,
       words,
       body,
       redirects,
