@@ -2640,6 +2640,36 @@ describe("time reserved keyword on pipelines", () => {
     expect(p3.commands.length).toBe(2);
   });
 
+  test("! time ! cmd keeps leading ! as command name under outer negation", () => {
+    const script = parseShell("! time ! cmd");
+    const pipeline = script.commands[0]! as any;
+    expect(pipeline.timed).toBe(true);
+    expect(pipeline.negated).toBe(true);
+
+    const cmd = pipeline.commands[0];
+    expect(cmd.type).toBe("SimpleCommand");
+    expect(cmd.name.parts[0].value).toBe("!");
+    expect(cmd.args.length).toBe(1);
+    expect(cmd.args[0].parts[0].value).toBe("cmd");
+  });
+
+  test("! time ! ! cmd keeps subsequent ! as a normal argument", () => {
+    const script = parseShell("! time ! ! cmd");
+    const pipeline = script.commands[0]! as any;
+    expect(pipeline.timed).toBe(true);
+    expect(pipeline.negated).toBe(true);
+
+    const cmd = pipeline.commands[0];
+    expect(cmd.type).toBe("SimpleCommand");
+    expect(cmd.name.parts[0].value).toBe("!");
+    expect(cmd.args[0].parts[0].value).toBe("!");
+    expect(cmd.args[1].parts[0].value).toBe("cmd");
+  });
+
+  test("time ! ! true remains a parse error", () => {
+    expect(() => parseShell("time ! ! true")).toThrow(ParseError);
+  });
+
   test("non-command positions continue to parse time as a regular word", () => {
     const script = parseShell("echo time");
     const pipeline = script.commands[0]! as any;

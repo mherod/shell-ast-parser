@@ -643,6 +643,7 @@ class Parser {
   private parsePipeline(): Pipeline {
     const start = this.peek().range.start;
     let negated = false;
+    let outerNegated = false;
     let timed = false;
     let posixFormat: boolean | undefined = undefined;
 
@@ -650,6 +651,7 @@ class Parser {
       if (!negated && (this.atAny(TokenType.Keyword, "!") || this.atAny(TokenType.Word, "!"))) {
         this.advance();
         negated = true;
+        if (!timed) outerNegated = true;
         continue;
       }
       if (!timed && (this.atAny(TokenType.Keyword, "time") || this.atAny(TokenType.Word, "time"))) {
@@ -664,7 +666,7 @@ class Parser {
       break;
     }
 
-    const commands: Command[] = [this.parseCommand()];
+    const commands: Command[] = [this.parseCommand(outerNegated && timed && this.at(TokenType.Keyword, "!"))];
 
     while (this.atAny(TokenType.Operator, "|") && !this.atAny(TokenType.Operator, "||")) {
       this.advance();
@@ -687,7 +689,7 @@ class Parser {
 
   // ── Command dispatch ───────────────────────────────────────────
 
-  private parseCommand(): Command {
+  private parseCommand(allowKeywordBangAsName = false): Command {
     const tok = this.peek();
 
     // Compound commands
@@ -720,12 +722,14 @@ class Parser {
       return this.parseSubshell();
     }
 
-    return this.parseSimpleCommandOrFunctionDef();
+    return this.parseSimpleCommandOrFunctionDef(allowKeywordBangAsName);
   }
 
   // ── Simple command (with function def detection) ───────────────
 
-  private parseSimpleCommandOrFunctionDef(): SimpleCommand | FunctionDef | LetCommand | TestCommand {
+  private parseSimpleCommandOrFunctionDef(
+    allowKeywordBangAsName = false,
+  ): SimpleCommand | FunctionDef | LetCommand | TestCommand {
     const start = this.peek().range.start;
     const assignments: Assignment[] = [];
     const redirects: Redirect[] = [];
@@ -740,7 +744,8 @@ class Parser {
       redirects.push(this.parseRedirect());
     }
 
-    if (!this.at(TokenType.Word) && !this.at(TokenType.Keyword, "[[")) {
+    const hasBangKeyword = allowKeywordBangAsName && this.at(TokenType.Keyword, "!");
+    if (!this.at(TokenType.Word) && !hasBangKeyword && !this.at(TokenType.Keyword, "[[")) {
       if (assignments.length === 0 && redirects.length === 0) {
         // Nothing was consumed at all — a pipe or list operator with no
         // command on this side, not a valid (if unusual) empty command.
@@ -793,7 +798,8 @@ class Parser {
     while (
       this.at(TokenType.Word) ||
       this.at(TokenType.Assignment) ||
-      this.at(TokenType.Redirect)
+      this.at(TokenType.Redirect) ||
+      (allowKeywordBangAsName && this.at(TokenType.Keyword, "!"))
     ) {
       if (this.at(TokenType.Redirect)) {
         redirects.push(this.parseRedirect());
