@@ -356,6 +356,52 @@ describe("redirects", () => {
   });
 });
 
+describe("pipelines and lists require both operands", () => {
+  test("a trailing pipe with no right-hand command throws", () => {
+    expect(() => parseShell("echo hello |\n")).toThrow(ParseError);
+  });
+
+  test("a trailing && with no right-hand command throws", () => {
+    expect(() => parseShell("echo hello &&\n")).toThrow(ParseError);
+  });
+
+  test("a trailing || with no right-hand command throws", () => {
+    expect(() => parseShell("echo hello ||\n")).toThrow(ParseError);
+  });
+
+  test("a leading || with no left-hand command throws", () => {
+    expect(() => parseShell("|| echo hello\n")).toThrow(ParseError);
+  });
+
+  test("a leading && with no left-hand command throws", () => {
+    expect(() => parseShell("&& echo hello\n")).toThrow(ParseError);
+  });
+
+  test("a leading | with no left-hand command throws", () => {
+    expect(() => parseShell("| echo hello\n")).toThrow(ParseError);
+  });
+
+  test("valid pipelines still parse correctly", () => {
+    const pipeline = firstOf(parseShell("a | b | c"), "Pipeline");
+    if (pipeline === null) throw new Error("expected a Pipeline node");
+    expect(pipeline.commands.length).toBe(3);
+  });
+
+  test("valid lists still parse correctly", () => {
+    const list = firstOf(parseShell("a && b || c"), "List");
+    if (list === null) throw new Error("expected a List node");
+    expect(list.op).toBe("||");
+  });
+
+  test("a true assignment-only command still parses", () => {
+    expect(() => parseShell("FOO=bar")).not.toThrow();
+  });
+
+  test("a bare redirect with no command name still parses", () => {
+    expect(() => parseShell("> out.txt")).not.toThrow();
+  });
+});
+
 describe("array assignments", () => {
   const assignment = (src: string) => (parseShell(src).commands[0] as any).commands[0].assignments[0];
 

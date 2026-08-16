@@ -695,7 +695,12 @@ class Parser {
     }
 
     if (!this.at(TokenType.Word) && !this.at(TokenType.Keyword, "[[")) {
-      // Assignment-only command
+      if (assignments.length === 0 && redirects.length === 0) {
+        // Nothing was consumed at all — a pipe or list operator with no
+        // command on this side, not a valid (if unusual) empty command.
+        throw new ParseError("Expected a command", this.peek());
+      }
+      // Assignment-only (and/or redirect-only) command
       const end = this.pos > 0 ? this.tokens[this.pos - 1]!.range.end : start;
       return {
         type: "SimpleCommand",
