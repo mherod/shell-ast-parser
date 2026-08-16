@@ -879,6 +879,23 @@ describe("boundary inputs and sad path tokenization", () => {
     expect(tokens[1]!.value).toBe("\\");
   });
 
+  test.each([
+    ["quoted regex operand", '[[ x =~ "a\\'],
+    ["command substitution", 'echo $(printf \\'],
+  ] as const)("a terminal escape in a %s keeps token ranges inside the source", (_kind, source) => {
+    const tokens = tokenize(source);
+
+    expect(tokens.every(token =>
+      token.range.start >= 0 &&
+      token.range.start <= token.range.end &&
+      token.range.end <= source.length
+    )).toBe(true);
+    expect(tokens.at(-1)).toMatchObject({
+      type: TokenType.EOF,
+      range: { start: source.length, end: source.length },
+    });
+  });
+
   test("unterminated quotes and backticks flag unterminated: true", () => {
     expect(tokenize("'unterminated")[0]!.unterminated).toBe(true);
     expect(tokenize('"unterminated')[0]!.unterminated).toBe(true);

@@ -44,7 +44,7 @@ export function skipQuoted(text: string, pos: number): number {
   let i = pos + 1;
 
   while (i < text.length && text[i] !== quote) {
-    if (quote === '"' && text[i] === "\\") i += 2;
+    if (quote === '"' && text[i] === "\\") i += i + 1 < text.length ? 2 : 1;
     else i++;
   }
 
@@ -207,7 +207,7 @@ export function readBalanced(
   while (i < text.length) {
     const ch = text[i]!;
 
-    if (ch === "\\") { i += 2; continue; }
+    if (ch === "\\") { i += i + 1 < text.length ? 2 : 1; continue; }
     if (ch === "'" || ch === '"') { i = skipQuoted(text, i); continue; }
 
     if (shellCode && ch === "#" && startsWord(text, i, start)) {
