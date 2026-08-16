@@ -271,7 +271,7 @@ class Tokenizer {
         // item begins right there, keywords and all.
         if (ch === "(" || ch === ")") this.atCommandStart = true;
         if (opensArray) this.inDeclarationCommand = declarationContext;
-        if (ch === ")" && !closesArray) this.recordFunctionDefinition();
+        if (ch === ")") this.recordFunctionDefinition();
         continue;
       }
 
@@ -755,7 +755,7 @@ class Tokenizer {
     });
     this.atCommandStart = wasAfterTime && (value === "-p" || value === "--");
 
-    if (afterFunctionKeyword && this.arrayLiteralDepth === 0) this.definedFunctions.add(value);
+    if (afterFunctionKeyword) this.definedFunctions.add(value);
 
     // A user function of the same name shadows the builtin
     if (this.arrayLiteralDepth === 0 && wasCommandStart &&

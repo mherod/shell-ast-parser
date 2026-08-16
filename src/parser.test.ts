@@ -2672,6 +2672,10 @@ describe("function names with dots, dashes, and colons", () => {
     expect(() => parseShell("X=1 f() { :; }")).toThrow(ParseError);
   });
 
+  test("a function definition cannot silently discard a prefix redirect", () => {
+    expect(() => parseShell(">out f() { :; }")).toThrow(ParseError);
+  });
+
   test("foo.bar() { echo 1; } parses as FunctionDef with name 'foo.bar'", () => {
     const script = parseShell("foo.bar() { echo 1; }");
     const pipeline = script.commands[0]! as any;

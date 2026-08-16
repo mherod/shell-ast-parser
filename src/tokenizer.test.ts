@@ -614,6 +614,13 @@ describe("declaration builtin shadowing by user functions", () => {
     expect(assignment?.type).toBe(TokenType.Assignment);
   });
 
+  test("declaration builtin names stay data inside array literals", () => {
+    const tokens = tokenize("arr=(export X=1)");
+    const element = tokens.find(token => token.value === "X=1");
+
+    expect(element?.type).toBe(TokenType.Word);
+  });
+
   test("defining a function shadows declaration builtins from that point forward", () => {
     const src = "export() { echo custom; }; export x=1";
     const tokens = tokenize(src).filter(t => t.type !== TokenType.EOF && t.type !== TokenType.Operator && t.type !== TokenType.Keyword);
