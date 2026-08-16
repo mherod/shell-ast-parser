@@ -855,6 +855,14 @@ describe("subscripted assignment", () => {
     expect(src.slice(a.subscript.range.start, a.subscript.range.end)).toBe("$i");
   });
 
+  test("an arithmetic subscript may contain spaces", () => {
+    const src = "ITEMS[i + 1]=x";
+    const a = assignment(src);
+    expect(a.name).toBe("ITEMS");
+    expect(a.subscript.parts[0].value).toBe("i + 1");
+    expect(src.slice(a.subscript.range.start, a.subscript.range.end)).toBe("i + 1");
+  });
+
   test("subscript combines with +=", () => {
     const a = assignment("ITEMS[0]+=x");
     expect(a.append).toBe(true);

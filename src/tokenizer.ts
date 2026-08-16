@@ -659,6 +659,24 @@ class Tokenizer {
         continue;
       }
 
+      // An arithmetic array subscript may contain unquoted spaces. Keep the
+      // balanced bracket group inside a potential assignment target, but only
+      // when it is followed immediately by = or +=; ordinary words and glob
+      // brackets must still stop at shell whitespace.
+      if (
+        ch === "[" &&
+        (this.atCommandStart || this.inDeclarationCommand) &&
+        /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)
+      ) {
+        const bracket = readBalanced(this.src, this.pos, "[", "]");
+        const suffix = this.src.slice(bracket.next, bracket.next + 2);
+        if (bracket.closed && (suffix.startsWith("=") || suffix === "+=")) {
+          value += this.src.slice(this.pos, bracket.next);
+          this.pos = bracket.next;
+          continue;
+        }
+      }
+
       if (!isWordChar(ch)) break;
 
       if (ch === "=" && !hasEquals) {
