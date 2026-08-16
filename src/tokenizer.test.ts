@@ -344,6 +344,16 @@ describe("the zsh dialect", () => {
 });
 
 describe("heredoc delimiter spelling", () => {
+  test("quoted and unquoted delimiter fragments form one word", () => {
+    const source = "cat <<'E'OF\nbody\nEOF\n";
+    const tokens = tokenize(source);
+    const body = tokens.find(token => token.type === TokenType.HereDocBody);
+
+    expect(tokens[2]!.type).toBe(TokenType.Word);
+    expect(tokens[2]!.value).toBe("'E'OF");
+    expect(body?.value).toBe("body\n");
+  });
+
   test("EOF, 'EOF', \"EOF\", and \\EOF all keep their spelling in the delimiter token", () => {
     for (const [open, expectedValue] of [
       ["<<EOF", "EOF"],

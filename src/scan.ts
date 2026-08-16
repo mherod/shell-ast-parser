@@ -101,24 +101,25 @@ export function readHereDocDelimiter(
   let delimiter = "";
   let quoted = false;
 
-  if (text[i] === "'" || text[i] === '"') {
-    const quote = text[i]!;
-    quoted = true;
-    i++;
-    while (i < text.length && text[i] !== quote) { delimiter += text[i]; i++; }
-    if (i < text.length) i++;
-  } else {
-    // The delimiter is a word, so a metacharacter ends it: in
-    // `cat << EOF; then` the `;` belongs to the line, not to the name of the
-    // delimiter, and taking it would leave one no line can match.
-    while (i < text.length && isWordChar(text[i]!)) {
-      if (text[i] === "\\" && i + 1 < text.length) {
-        quoted = true;
-        i++;
-      }
-      delimiter += text[i];
+  // The delimiter is one shell word whose quoted and unquoted fragments may be
+  // concatenated: `'E'OF` is spelled that way but matches a line containing
+  // `EOF`. A metacharacter ends the whole word.
+  while (i < text.length && isWordChar(text[i]!)) {
+    if (text[i] === "'" || text[i] === '"') {
+      const quote = text[i]!;
+      quoted = true;
+      i++;
+      while (i < text.length && text[i] !== quote) { delimiter += text[i]; i++; }
+      if (i < text.length) i++;
+      continue;
+    }
+
+    if (text[i] === "\\" && i + 1 < text.length) {
+      quoted = true;
       i++;
     }
+    delimiter += text[i];
+    i++;
   }
 
   return { delimiter, quoted, next: i };
