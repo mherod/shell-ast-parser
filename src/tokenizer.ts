@@ -457,7 +457,6 @@ class Tokenizer {
             value: op,
             range: { start, end: this.pos },
           });
-          this.beginRedirectTarget();
 
           // Read the delimiter with the same reader the nested scanners use, so
           // the two cannot disagree about what ends a body
@@ -475,7 +474,6 @@ class Tokenizer {
           });
 
           this.pendingHereDocs.push({ delimiter, stripTabs });
-          this.finishRedirectTarget();
           return;
         }
       }
@@ -494,12 +492,6 @@ class Tokenizer {
   private beginRedirectTarget(): void {
     this.commandStartBeforeRedirectTarget = this.atCommandStart;
     this.atCommandStart = false;
-  }
-
-  private finishRedirectTarget(): void {
-    const commandStart = this.commandStartBeforeRedirectTarget;
-    this.commandStartBeforeRedirectTarget = null;
-    if (commandStart !== null) this.atCommandStart = commandStart;
   }
 
   private consumePendingHereDocs(): void {
@@ -709,7 +701,8 @@ class Tokenizer {
 
     if (value === "") return;
 
-    const isRedirectTarget = this.commandStartBeforeRedirectTarget !== null;
+    const commandStartBeforeRedirectTarget = this.commandStartBeforeRedirectTarget;
+    const isRedirectTarget = commandStartBeforeRedirectTarget !== null;
 
     // Check for [[ keyword (two chars)
     if (!isRedirectTarget && (value === "[[" || value === "]]")) {
@@ -771,8 +764,9 @@ class Tokenizer {
       ...(unterminated ? { unterminated: true as const } : {}),
     });
 
-    if (isRedirectTarget) {
-      this.finishRedirectTarget();
+    if (commandStartBeforeRedirectTarget !== null) {
+      this.commandStartBeforeRedirectTarget = null;
+      this.atCommandStart = commandStartBeforeRedirectTarget;
       return;
     }
 
