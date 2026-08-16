@@ -18,6 +18,11 @@ const SCRIPT_FIXTURES = [
     expectedCommands: ["tr", "sort", "head"],
     expectedNodeTypes: ["FunctionDef", "Pipeline", "BraceGroup"],
   },
+  {
+    file: "prime-report.sh",
+    expectedCommands: ["printf", "return"],
+    expectedNodeTypes: ["FunctionDef", "WhileClause", "ArithmeticForClause", "CaseClause", "ArrayLiteral"],
+  },
 ] as const;
 
 describe("Fixture shell scripts parse end-to-end", () => {

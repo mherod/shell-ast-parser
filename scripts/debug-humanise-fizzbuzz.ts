@@ -5,16 +5,19 @@
  *   bun scripts/debug-humanise-fizzbuzz.ts
  *   bun scripts/debug-humanise-fizzbuzz.ts fixtures/sort-numbers.sh
  *   bun scripts/debug-humanise-fizzbuzz.ts fixtures/word-frequency.sh --check
+ *   bun scripts/debug-humanise-fizzbuzz.ts fixtures/prime-report.sh --check
  */
 import {
   parseShell,
   type ArithmeticExpr,
   type Assignment,
+  type CaseClause,
   type Command,
   type CompoundWord,
   type IfClause,
   type List,
   type Pipeline,
+  type Redirect,
   type Script,
   type SimpleCommand,
   type TestExpr,
@@ -77,6 +80,15 @@ function plainWord(word: CompoundWord): string | null {
   return result;
 }
 
+function sourceLikeWord(word: CompoundWord): string | null {
+  let result = "";
+  for (const part of word.parts) {
+    if (part.type !== "Word" && part.type !== "GlobPattern") return null;
+    result += part.value;
+  }
+  return result;
+}
+
 function ordinal(position: number): string {
   if (position === 1) return "first";
   if (position === 2) return "second";
@@ -105,7 +117,7 @@ function describeExpansion(expansion: VariableExpansion): string {
   const arrayLength = /^#([a-zA-Z_][a-zA-Z0-9_]*)\[@\]$/.exec(expansion.expression);
   if (arrayLength) return `the number of values in ${code(arrayLength[1]!)}`;
 
-  const allArrayValues = /^([a-zA-Z_][a-zA-Z0-9_]*)\[@\]$/.exec(expansion.expression);
+  const allArrayValues = /^([a-zA-Z_][a-zA-Z0-9_]*)\[(?:@|\*)\]$/.exec(expansion.expression);
   if (allArrayValues) return `all values in ${code(allArrayValues[1]!)}`;
 
   const arrayValue = /^([a-zA-Z_][a-zA-Z0-9_]*)\[([\s\S]+)\]$/.exec(expansion.expression);
@@ -175,6 +187,12 @@ function describeArithmetic(expression: ArithmeticExpr): string {
     case "ArithmeticAssignment": {
       if (expression.op === "=") {
         return `set ${describeTarget(expression.target)} to ${describeArithmetic(expression.value)}`;
+      }
+      if (expression.op === "+=") {
+        return `increase ${describeTarget(expression.target)} by ${describeArithmetic(expression.value)}`;
+      }
+      if (expression.op === "-=") {
+        return `decrease ${describeTarget(expression.target)} by ${describeArithmetic(expression.value)}`;
       }
       return `update ${describeTarget(expression.target)} using ${code(expression.op)} and ${describeArithmetic(expression.value)}`;
     }
@@ -250,6 +268,45 @@ function describeEcho(command: SimpleCommand): string {
   return `Print ${values.join(" followed by ")}.`;
 }
 
+function describeRedirects(redirects: Redirect[]): string {
+  if (redirects.some((redirect) =>
+    redirect.op === ">&" &&
+    redirect.target.type === "CompoundWord" &&
+    plainWord(redirect.target) === "2"
+  )) {
+    return " to standard error";
+  }
+  return "";
+}
+
+function describePrintf(command: SimpleCommand, words: CompoundWord[], args: (string | null)[]): string {
+  if (args[0] === "%s\\n" && words[1]) {
+    return `Print ${describeWord(words[1])}, one value per line.`;
+  }
+  if (args[0] === "%-20s %s\\n" && words[1] && words[2]) {
+    return `Print ${describeWord(words[1])} left-aligned in a 20-character field, followed by ${describeWord(words[2])}.`;
+  }
+
+  const format = words[0] ? describeWord(words[0]) : "an empty string";
+  const values = words.slice(1).map(describeWord);
+  const destination = describeRedirects(command.redirects);
+  if (values.length === 0) return `Print ${format}${destination}.`;
+  return `Print ${format}, substituting ${values.join(", then ")}${destination}.`;
+}
+
+function describeDeclaration(command: SimpleCommand, name: string): string[] {
+  const assignments = command.args.filter((arg): arg is Assignment => arg.type === "Assignment");
+  if (assignments.length === 0) return [`Declare local shell variables with ${code(name)}.`];
+  return assignments.map((assignment) => {
+    const variable = code(assignment.name);
+    if (!assignment.value) return `Create the local variable ${variable} with an empty value.`;
+    if (assignment.value.type === "ArrayLiteral") {
+      return `Create the local variable ${variable} as a list.`;
+    }
+    return `Create the local variable ${variable} and set it to ${describeWord(assignment.value)}.`;
+  });
+}
+
 function describeSimpleCommand(command: SimpleCommand): string[] {
   if (!command.name) return command.assignments.map(describeAssignment);
 
@@ -266,11 +323,17 @@ function describeSimpleCommand(command: SimpleCommand): string[] {
       ? ["Copy standard input to standard output."]
       : [`Output the contents of ${describeWord(words[0]!)}.`];
   }
-  if (name === "printf" && args[0] === "%s\\n" && words[1]) {
-    return [`Print ${describeWord(words[1])}, one value per line.`];
+  if (name === "printf") return [describePrintf(command, words, args)];
+  if (name === "local" || name === "declare" || name === "typeset") {
+    return describeDeclaration(command, name);
   }
-  if (name === "printf" && args[0] === "%-20s %s\\n" && words[1] && words[2]) {
-    return [`Print ${describeWord(words[1])} left-aligned in a 20-character field, followed by ${describeWord(words[2])}.`];
+  if (name === "return") {
+    if (args[0] === "0") return ["Return success from the current function."];
+    if (args[0] === "1") return ["Return failure from the current function."];
+    return [`Return from the current function with status ${words[0] ? describeWord(words[0]) : "from the previous command"}.`];
+  }
+  if (name === "exit") {
+    return [`Exit the script with status ${words[0] ? describeWord(words[0]) : "from the previous command"}.`];
   }
   if (name === "read") {
     const targets = words
@@ -313,6 +376,10 @@ function describeTest(expression: TestExpr): string {
       return `${describeWord(expression.operand)} ${operation}`;
     }
     case "TestBinary": {
+      if (expression.op === "=~") {
+        const pattern = sourceLikeWord(expression.right);
+        return `${describeWord(expression.left)} matches the regular expression ${pattern === null ? describeWord(expression.right) : code(pattern)}`;
+      }
       const operation = {
         "=": "equals",
         "==": "matches",
@@ -331,6 +398,10 @@ function describeTest(expression: TestExpr): string {
       return `${describeTest(expression.left)} ${operation} ${describeTest(expression.right)}`;
     }
     case "TestNegation":
+      if (expression.operand.type === "TestBinary" && expression.operand.op === "=~") {
+        const pattern = sourceLikeWord(expression.operand.right);
+        return `${describeWord(expression.operand.left)} does not match the regular expression ${pattern === null ? describeWord(expression.operand.right) : code(pattern)}`;
+      }
       return `not (${describeTest(expression.operand)})`;
     case "TestValue":
       return `${describeWord(expression.word)} is not empty`;
@@ -346,6 +417,12 @@ function describeConditionCommand(command: Command): string {
     return `${describeConditionCommand(actual.left)} ${join} ${describeConditionCommand(actual.right)}`;
   }
   if (actual.type === "SimpleCommand") {
+    const name = commandName(actual);
+    const words = actual.args.filter((arg): arg is CompoundWord => arg.type === "CompoundWord");
+    if (name) {
+      const inputs = words.map(describeWord);
+      return `${code(name)} succeeds${inputs.length > 0 ? ` when called with ${inputs.join(", ")}` : ""}`;
+    }
     const [description] = describeSimpleCommand(actual);
     return description?.replace(/\.$/, "").replace(/^Read /, "it can read ") ?? "the command succeeds";
   }
@@ -460,6 +537,25 @@ function describePipeline(command: Pipeline, depth: number): string[] {
   ];
 }
 
+function describeCase(command: CaseClause, depth: number): string[] {
+  const pad = "  ".repeat(depth);
+  const bullet = depth > 0 ? "- " : "";
+  const lines = [`${pad}${bullet}Choose an output branch based on ${describeWord(command.word)}:`];
+
+  for (const item of command.items) {
+    const patterns = item.patterns.map((pattern) => sourceLikeWord(pattern) ?? describeWord(pattern));
+    const label = patterns.includes("*")
+      ? "For any other value"
+      : `When it equals ${patterns.map(code).join(" or ")}`;
+    lines.push(`${pad}  - ${label}:`);
+    lines.push(...describeScript(item.body, depth + 2));
+    if (item.terminator === ";&") lines.push(`${pad}    - Then continue into the next branch body.`);
+    if (item.terminator === ";;&" || item.terminator === ";|") lines.push(`${pad}    - Then continue testing later patterns.`);
+  }
+
+  return lines;
+}
+
 function describeCommand(command: Command, depth: number): string[] {
   const actual = unwrapSinglePipeline(command);
   const pad = "  ".repeat(depth);
@@ -492,7 +588,12 @@ function describeCommand(command: Command, depth: number): string[] {
     case "TestCommand":
       return [`${pad}${depth > 0 ? "- " : ""}Check whether ${actual.expression ? describeTest(actual.expression) : "the test succeeds"}.`];
     case "ArithmeticCommand":
-      return [`${pad}Check whether ${actual.parsed ? describeArithmetic(actual.parsed) : code(actual.expression)}.`];
+      if (actual.parsed?.type === "ArithmeticAssignment" || actual.parsed?.type === "ArithmeticUpdate") {
+        return [`${pad}${depth > 0 ? "- " : ""}${describeArithmetic(actual.parsed).replace(/^./, (letter) => letter.toUpperCase())}.`];
+      }
+      return [`${pad}${depth > 0 ? "- " : ""}Check whether ${actual.parsed ? describeArithmetic(actual.parsed) : code(actual.expression)}.`];
+    case "CaseClause":
+      return describeCase(actual, depth);
     case "Pipeline":
       return describePipeline(actual, depth);
     default:
@@ -562,6 +663,36 @@ if (Bun.argv.includes("--check")) {
         "Sort the counts numerically from highest to lowest",
         "Keep only the first `top` results",
         "Print the value of `word` left-aligned in a 20-character field",
+      ],
+    },
+    "prime-report.sh": {
+      topLevelActions: 11,
+      requiredMeanings: [
+        "the first command-line argument, or `100` if it is missing or empty",
+        "the second command-line argument, or `text` if it is missing or empty",
+        "does not match the regular expression `^[0-9]+$`",
+        "`limit` is less than 2",
+        "to standard error",
+        "Exit the script with status `2`",
+        "Define a function named `is_prime`",
+        "Create the local variable `n` and set it to the first command-line argument",
+        "Return failure from the current function",
+        "Return success from the current function",
+        "`n` is divisible by 2",
+        "`divisor` is less than or equal to `n` divided by `divisor`",
+        "Increase `divisor` by 2",
+        "Set `primes` to an empty list",
+        "set `candidate` to 2",
+        "`is_prime` succeeds when called with the value of `candidate`",
+        "Append the value of `candidate` to `primes`",
+        "Set `gap` to `candidate` minus `previous`",
+        "Set `max_gap` to the value of `gap`",
+        "Choose an output branch based on the value of `format`",
+        "When it equals `text`",
+        "all values in `primes`",
+        "the number of values in `primes`",
+        "When it equals `json`",
+        "the value in `primes` at index `i`",
       ],
     },
   };
