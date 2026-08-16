@@ -730,6 +730,16 @@ describe("arithmetic command and C-style for disambiguation", () => {
 });
 
 describe("[[ ... ]] test command tokenization and regex matching", () => {
+  test("a terminal regex escape keeps token ranges inside the source", () => {
+    const source = "[[ value =~ trailing\\";
+    const tokens = tokenize(source);
+    const regex = tokens.find(token => token.value === "trailing\\");
+    const eof = tokens.at(-1)!;
+
+    expect(regex?.range.end).toBe(source.length);
+    expect(eof.range).toEqual({ start: source.length, end: source.length });
+  });
+
   test("regex operand =~ consumes pattern whole including parens and spaces", () => {
     const tokens = tokenize('[[ $str =~ (foo bar|baz qux)+ ]]').filter(t => t.type !== TokenType.EOF);
     expect(tokens[0]!.type).toBe(TokenType.Keyword);
@@ -870,4 +880,3 @@ describe("boundary inputs and sad path tokenization", () => {
     ]);
   });
 });
-

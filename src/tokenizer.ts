@@ -778,7 +778,10 @@ class Tokenizer {
       const ch = this.src[this.pos]!;
 
       if (ch === "\n") break;
-      if (ch === "\\") { this.pos += 2; continue; }
+      if (ch === "\\") {
+        this.pos += this.pos + 1 < this.src.length ? 2 : 1;
+        continue;
+      }
       if (ch === "'" || ch === '"') { this.pos = skipQuoted(this.src, this.pos); continue; }
 
       // An expansion is one unit: the space in `${cached% *}` is inside it and
