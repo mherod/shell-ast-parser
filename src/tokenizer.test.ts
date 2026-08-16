@@ -520,4 +520,17 @@ describe("time keyword tokenization", () => {
   });
 });
 
+describe("function names with dots, dashes, and colons tokenization", () => {
+  test("tokenizes function names with special characters as single Word tokens", () => {
+    const tokens = tokenize("foo.bar() { echo 1; }\nmy-func() { :; }\nmodule:init() { :; }").filter(t => t.type !== TokenType.EOF && t.type !== TokenType.Newline);
+    expect(tokens[0]!.type).toBe(TokenType.Word);
+    expect(tokens[0]!.value).toBe("foo.bar");
+    expect(tokens[1]!.type).toBe(TokenType.Operator);
+    expect(tokens[1]!.value).toBe("(");
+    expect(tokens[2]!.type).toBe(TokenType.Operator);
+    expect(tokens[2]!.value).toBe(")");
+  });
+});
+
+
 

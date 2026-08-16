@@ -2659,5 +2659,54 @@ describe("time reserved keyword on pipelines", () => {
   });
 });
 
+describe("function names with dots, dashes, and colons", () => {
+  test("foo.bar() { echo 1; } parses as FunctionDef with name 'foo.bar'", () => {
+    const script = parseShell("foo.bar() { echo 1; }");
+    const pipeline = script.commands[0]! as any;
+    const fn = pipeline.commands[0];
+    expect(fn.type).toBe("FunctionDef");
+    expect(fn.name).toBe("foo.bar");
+  });
+
+  test("my-func() { echo 2; } parses as FunctionDef with name 'my-func'", () => {
+    const script = parseShell("my-func() { echo 2; }");
+    const pipeline = script.commands[0]! as any;
+    const fn = pipeline.commands[0];
+    expect(fn.type).toBe("FunctionDef");
+    expect(fn.name).toBe("my-func");
+  });
+
+  test("module:init() { echo 3; } parses as FunctionDef with name 'module:init'", () => {
+    const script = parseShell("module:init() { echo 3; }");
+    const pipeline = script.commands[0]! as any;
+    const fn = pipeline.commands[0];
+    expect(fn.type).toBe("FunctionDef");
+    expect(fn.name).toBe("module:init");
+  });
+
+  test("supports spaces and function keyword with special characters", () => {
+    const s1 = parseShell("foo.bar () { echo 1; }");
+    expect((s1.commands[0] as any).commands[0].name).toBe("foo.bar");
+
+    const s2 = parseShell("function my-func { echo 2; }");
+    expect((s2.commands[0] as any).commands[0].name).toBe("my-func");
+
+    const s3 = parseShell("function module:init() { echo 3; }");
+    expect((s3.commands[0] as any).commands[0].name).toBe("module:init");
+  });
+
+  test("zsh dialect parses special function names", () => {
+    const s1 = parseShell("foo.bar() { echo 1; }", { dialect: "zsh" });
+    expect((s1.commands[0] as any).commands[0].name).toBe("foo.bar");
+
+    const s2 = parseShell("my-func() { echo 2; }", { dialect: "zsh" });
+    expect((s2.commands[0] as any).commands[0].name).toBe("my-func");
+
+    const s3 = parseShell("module:init() { echo 3; }", { dialect: "zsh" });
+    expect((s3.commands[0] as any).commands[0].name).toBe("module:init");
+  });
+});
+
+
 
 
