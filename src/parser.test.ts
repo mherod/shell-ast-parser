@@ -1890,6 +1890,7 @@ describe("the zsh dialect", () => {
     "[[ $x == (a|b) ]]",
     "[[ $v == <1-> ]]",
     "X=($HOME/bin(N) $X)",
+    'if [[ -n $x ]] print "ok"',
   ];
 
   test("bash refuses what only zsh accepts", () => {
@@ -1923,6 +1924,21 @@ describe("the zsh dialect", () => {
       expect(loop.variables).toEqual(["x"]);
       expect(loop.words.length).toBe(2);
     }
+  });
+
+  test("the short if means what the long one means", () => {
+    const short = first('if [[ -n $x ]] print "ok"');
+    const long = first('if [[ -n $x ]]; then print "ok"; fi');
+    expect(short.type).toBe("IfClause");
+    expect(short.elifs).toEqual([]);
+    expect(short.else).toBeNull();
+    expect(short.then.commands.length).toBe(long.then.commands.length);
+  });
+
+  test("a short if's body doesn't swallow a following command on the next line", () => {
+    const script = zsh('if [[ -n $x ]] print "ok"\nprint "after"');
+    expect(script.commands.length).toBe(2);
+    expect(firstOf(script, "IfClause")).not.toBeNull();
   });
 
   test("a for-loop body may be a single command after `in`", () => {

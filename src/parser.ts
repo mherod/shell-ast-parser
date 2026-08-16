@@ -542,8 +542,15 @@ class Parser {
    * `stopAtBrace` reads a zsh condition, where a `{` that follows it opens the
    * body: `if (( x )) { … }`. It only stops once something has been read, so a
    * brace group can still be the condition itself.
+   *
+   * `stopAtShortBody` reads zsh's other short form, where a single command
+   * with no `;`/newline before it — `if cond cmd` — is the body rather than a
+   * further item in the condition's own list. A `;` still chains more items
+   * into the condition (its truth value is the last item's, same as any
+   * list), and a newline still permits the long `then` form same as before;
+   * only the total absence of a separator marks the body's start.
    */
-  private parseCompoundList(_topLevel: boolean = false, stopAtBrace: boolean = false): Command[] {
+  private parseCompoundList(_topLevel: boolean = false, stopAtBrace: boolean = false, stopAtShortBody: boolean = false): Command[] {
     const commands: Command[] = [];
     this.skipNewlinesAndSemicolons();
 
@@ -562,12 +569,18 @@ class Parser {
       commands.push(cmd);
 
       // Consume list terminators
+      let hadSeparator = this.at(TokenType.Newline);
       if (this.atAny(TokenType.Operator, ";", "&")) {
         const op = this.advance();
+        hadSeparator = true;
         if (op.value === "&") {
           cmd.background = true;
           cmd.range = { start: cmd.range.start, end: op.range.end };
         }
+      }
+
+      if (stopAtShortBody && !hadSeparator && !this.isListTerminator() && !this.at(TokenType.EOF) && !this.atBraceGroup()) {
+        break;
       }
 
       this.skipNewlinesAndSemicolons();
@@ -951,12 +964,33 @@ class Parser {
   private parseIf(): IfClause {
     const start = this.expect(TokenType.Keyword, "if").range.start;
     this.skipNewlines();
-    const condition = this.wrapScript(this.parseCompoundList(false, this.dialect === "zsh"));
+    const condition = this.wrapScript(this.parseCompoundList(false, this.dialect === "zsh", this.dialect === "zsh"));
 
     // zsh writes the body in braces instead: `if (( x )) { … }`, with no `then`
     // and no `fi`. `else` may follow with braces of its own.
     if (this.dialect === "zsh" && !this.atWord("then") && this.atBraceGroup()) {
       return this.parseBraceIf(start, condition);
+    }
+
+    // zsh's other short form: `if cond cmd`, with no `then`/`fi` and no braces
+    // — the body is a single command directly following the condition, with
+    // no separator between them (the condition's own parseCompoundList call
+    // already stopped right there for exactly this reason). Real zsh rejects
+    // an elif/else chain after this form, so unlike the long form there is
+    // none to check for here.
+    if (this.dialect === "zsh" && !this.atWord("then") && !this.at(TokenType.Newline) && !this.at(TokenType.EOF)) {
+      const thenBody = this.wrapScript([this.parseCommand()]);
+      const redirects = this.parseTrailingRedirects();
+      const end = this.lastEnd(start);
+      return {
+        type: "IfClause",
+        condition,
+        then: thenBody,
+        elifs: [],
+        else: null,
+        redirects,
+        range: { start, end: redirects.length > 0 ? redirects[redirects.length - 1]!.range.end : end },
+      };
     }
 
     this.expectWord("then");
