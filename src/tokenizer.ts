@@ -115,6 +115,8 @@ class Tokenizer {
   /** Whether the next word is the pattern operand of `==` or `!=` (zsh) */
   private afterPatternOperator: boolean = false;
   private afterTimeKeyword: boolean = false;
+  /** Plain parentheses currently delimiting an array assignment's values. */
+  private arrayLiteralDepth: number = 0;
   private dialect: Dialect;
   /**
    * Functions defined so far. A function shadows a builtin of the same name
@@ -253,6 +255,7 @@ class Tokenizer {
         const opensArray = ch === "(" &&
           prev?.type === TokenType.Assignment &&
           prev.range.end === this.pos;
+        const closesArray = ch === ")" && this.arrayLiteralDepth > 0;
         const declarationContext = this.inDeclarationCommand;
 
         this.tokens.push({
@@ -261,12 +264,14 @@ class Tokenizer {
           range: { start: this.pos, end: this.pos + 1 },
         });
         this.pos++;
+        if (opensArray) this.arrayLiteralDepth++;
+        if (closesArray) this.arrayLiteralDepth--;
         // Both ends of a group open a command position: `(` starts the one
         // inside, and after `)` a new command may follow — the body of a case
         // item begins right there, keywords and all.
         if (ch === "(" || ch === ")") this.atCommandStart = true;
         if (opensArray) this.inDeclarationCommand = declarationContext;
-        if (ch === ")") this.recordFunctionDefinition();
+        if (ch === ")" && !closesArray) this.recordFunctionDefinition();
         continue;
       }
 
@@ -704,7 +709,8 @@ class Tokenizer {
 
     // Determine if this is a keyword, assignment, or word. `repeat` is a
     // keyword only in zsh; in bash it is an ordinary command name.
-    if (this.atCommandStart && (KEYWORDS.has(value) || (this.dialect === "zsh" && value === "repeat"))) {
+    if (this.arrayLiteralDepth === 0 && this.atCommandStart &&
+        (KEYWORDS.has(value) || (this.dialect === "zsh" && value === "repeat"))) {
       this.tokens.push({
         type: TokenType.Keyword,
         value,
@@ -749,10 +755,11 @@ class Tokenizer {
     });
     this.atCommandStart = wasAfterTime && (value === "-p" || value === "--");
 
-    if (afterFunctionKeyword) this.definedFunctions.add(value);
+    if (afterFunctionKeyword && this.arrayLiteralDepth === 0) this.definedFunctions.add(value);
 
     // A user function of the same name shadows the builtin
-    if (wasCommandStart && DECLARATION_BUILTINS.has(value) && !this.definedFunctions.has(value)) {
+    if (this.arrayLiteralDepth === 0 && wasCommandStart &&
+        DECLARATION_BUILTINS.has(value) && !this.definedFunctions.has(value)) {
       this.inDeclarationCommand = true;
     }
     if (this.inTestCommand && value === "=~") {

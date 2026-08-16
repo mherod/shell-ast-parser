@@ -607,6 +607,13 @@ describe("declaration builtins and assignment arguments", () => {
 });
 
 describe("declaration builtin shadowing by user functions", () => {
+  test("array elements cannot shadow declaration builtins", () => {
+    const tokens = tokenize("arr=(function export); export X=1");
+    const assignment = tokens.find(token => token.value === "X=1");
+
+    expect(assignment?.type).toBe(TokenType.Assignment);
+  });
+
   test("defining a function shadows declaration builtins from that point forward", () => {
     const src = "export() { echo custom; }; export x=1";
     const tokens = tokenize(src).filter(t => t.type !== TokenType.EOF && t.type !== TokenType.Operator && t.type !== TokenType.Keyword);
