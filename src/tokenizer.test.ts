@@ -532,5 +532,342 @@ describe("function names with dots, dashes, and colons tokenization", () => {
   });
 });
 
+describe("declaration builtins and assignment arguments", () => {
+  test("export allows multiple assignment arguments", () => {
+    const tokens = tokenize("export FOO=1 BAR=2 BAZ=3").filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.type).toBe(TokenType.Word);
+    expect(tokens[0]!.value).toBe("export");
+    expect(tokens[1]!.type).toBe(TokenType.Assignment);
+    expect(tokens[1]!.value).toBe("FOO=1");
+    expect(tokens[2]!.type).toBe(TokenType.Assignment);
+    expect(tokens[2]!.value).toBe("BAR=2");
+    expect(tokens[3]!.type).toBe(TokenType.Assignment);
+    expect(tokens[3]!.value).toBe("BAZ=3");
+  });
 
+  test("declare, typeset, local, readonly allow options before assignments", () => {
+    for (const cmd of ["declare", "typeset", "local", "readonly"] as const) {
+      const tokens = tokenize(`${cmd} -r -x MY_VAR="test"`).filter(t => t.type !== TokenType.EOF);
+      expect(tokens[0]!.type).toBe(TokenType.Word);
+      expect(tokens[0]!.value).toBe(cmd);
+      expect(tokens[1]!.type).toBe(TokenType.Word);
+      expect(tokens[1]!.value).toBe("-r");
+      expect(tokens[2]!.type).toBe(TokenType.Word);
+      expect(tokens[2]!.value).toBe("-x");
+      expect(tokens[3]!.type).toBe(TokenType.Assignment);
+      expect(tokens[3]!.value).toBe('MY_VAR="test"');
+    }
+  });
+
+  test("declare with array literal assignment preserves declaration context", () => {
+    const tokens = tokenize("declare -a ARR=(1 2 3) Y=4").filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.value).toBe("declare");
+    expect(tokens[1]!.value).toBe("-a");
+    expect(tokens[2]!.type).toBe(TokenType.Assignment);
+    expect(tokens[2]!.value).toBe("ARR=");
+    expect(tokens[3]!.type).toBe(TokenType.Operator);
+    expect(tokens[3]!.value).toBe("(");
+    expect(tokens[4]!.value).toBe("1");
+    expect(tokens[5]!.value).toBe("2");
+    expect(tokens[6]!.value).toBe("3");
+    expect(tokens[7]!.type).toBe(TokenType.Operator);
+    expect(tokens[7]!.value).toBe(")");
+    expect(tokens[8]!.type).toBe(TokenType.Assignment);
+    expect(tokens[8]!.value).toBe("Y=4");
+  });
+
+  test("non-declaration command arguments with = stay Word tokens", () => {
+    const tokens = tokenize("echo FOO=1 BAR=2").filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.value).toBe("echo");
+    expect(tokens[1]!.type).toBe(TokenType.Word);
+    expect(tokens[1]!.value).toBe("FOO=1");
+    expect(tokens[2]!.type).toBe(TokenType.Word);
+    expect(tokens[2]!.value).toBe("BAR=2");
+  });
+
+  test("declaration context resets at command boundaries (; \\n && || |)", () => {
+    const semiTokens = tokenize("export FOO=1; echo BAR=2").filter(t => t.type !== TokenType.EOF && t.type !== TokenType.Operator);
+    expect(semiTokens[0]!.type).toBe(TokenType.Word);
+    expect(semiTokens[1]!.type).toBe(TokenType.Assignment);
+    expect(semiTokens[2]!.type).toBe(TokenType.Word);
+    expect(semiTokens[3]!.type).toBe(TokenType.Word);
+
+    const newlineTokens = tokenize("local X=1\necho Y=2").filter(t => t.type !== TokenType.EOF && t.type !== TokenType.Newline);
+    expect(newlineTokens[1]!.type).toBe(TokenType.Assignment);
+    expect(newlineTokens[3]!.type).toBe(TokenType.Word);
+
+    const andTokens = tokenize("typeset A=1 && echo B=2").filter(t => t.type !== TokenType.EOF && t.type !== TokenType.Operator);
+    expect(andTokens[1]!.type).toBe(TokenType.Assignment);
+    expect(andTokens[3]!.type).toBe(TokenType.Word);
+
+    const pipeTokens = tokenize("readonly C=1 | cat D=2").filter(t => t.type !== TokenType.EOF && t.type !== TokenType.Operator);
+    expect(pipeTokens[1]!.type).toBe(TokenType.Assignment);
+    expect(pipeTokens[3]!.type).toBe(TokenType.Word);
+  });
+});
+
+describe("declaration builtin shadowing by user functions", () => {
+  test("defining a function shadows declaration builtins from that point forward", () => {
+    const src = "export() { echo custom; }; export x=1";
+    const tokens = tokenize(src).filter(t => t.type !== TokenType.EOF && t.type !== TokenType.Operator && t.type !== TokenType.Keyword);
+    expect(tokens[0]!.value).toBe("export");
+    expect(tokens[1]!.value).toBe("echo");
+    expect(tokens[2]!.value).toBe("custom");
+    expect(tokens[3]!.value).toBe("export");
+    expect(tokens[4]!.type).toBe(TokenType.Word);
+    expect(tokens[4]!.value).toBe("x=1");
+  });
+
+  test("function keyword definition also shadows declaration builtins", () => {
+    const src = "function local { echo custom; }; local a=10";
+    const tokens = tokenize(src).filter(t => t.type !== TokenType.EOF && t.type !== TokenType.Operator && t.type !== TokenType.Keyword);
+    expect(tokens[0]!.value).toBe("local");
+    expect(tokens[1]!.value).toBe("echo");
+    expect(tokens[2]!.value).toBe("custom");
+    expect(tokens[3]!.value).toBe("local");
+    expect(tokens[4]!.type).toBe(TokenType.Word);
+    expect(tokens[4]!.value).toBe("a=10");
+  });
+
+  test("declaration builtin before its function definition is NOT shadowed", () => {
+    const src = "export x=1\nexport() { :; }\nexport y=2";
+    const tokens = tokenize(src).filter(t => t.type !== TokenType.EOF && t.type !== TokenType.Newline && t.type !== TokenType.Operator && t.type !== TokenType.Keyword);
+    expect(tokens[0]!.value).toBe("export");
+    expect(tokens[1]!.type).toBe(TokenType.Assignment);
+    expect(tokens[1]!.value).toBe("x=1");
+    expect(tokens[2]!.value).toBe("export");
+    expect(tokens[3]!.value).toBe(":");
+    expect(tokens[4]!.value).toBe("export");
+    expect(tokens[5]!.type).toBe(TokenType.Word);
+    expect(tokens[5]!.value).toBe("y=2");
+  });
+});
+
+describe("line continuations and joins tracking", () => {
+  test("line continuation within bare word tracks join offset", () => {
+    const src = "ec\\\nho hello";
+    const tokens = tokenize(src).filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.type).toBe(TokenType.Word);
+    expect(tokens[0]!.value).toBe("echo");
+    expect(tokens[0]!.joins).toEqual([2]);
+    expect(tokens[0]!.range).toEqual({ start: 0, end: 6 });
+    expect(tokens[1]!.value).toBe("hello");
+  });
+
+  test("multiple line continuations in one word", () => {
+    const src = "a\\\nb\\\nc\\\nd";
+    const tokens = tokenize(src).filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.type).toBe(TokenType.Word);
+    expect(tokens[0]!.value).toBe("abcd");
+    expect(tokens[0]!.joins).toEqual([1, 2, 3]);
+    expect(tokens[0]!.range).toEqual({ start: 0, end: 10 });
+  });
+
+  test("line continuation in assignment", () => {
+    const src = "FOO=bar\\\nbaz";
+    const tokens = tokenize(src).filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.type).toBe(TokenType.Assignment);
+    expect(tokens[0]!.value).toBe("FOO=barbaz");
+    expect(tokens[0]!.joins).toEqual([7]);
+  });
+
+  test("line continuation in whitespace is cleanly skipped", () => {
+    const src = "echo \\\n hello";
+    const tokens = tokenize(src).filter(t => t.type !== TokenType.EOF);
+    expect(tokens.length).toBe(2);
+    expect(tokens[0]!.value).toBe("echo");
+    expect(tokens[1]!.value).toBe("hello");
+  });
+});
+
+describe("arithmetic command and C-style for disambiguation", () => {
+  test("standalone arithmetic command (( ... ))", () => {
+    const tokens = tokenize("(( 1 + 2 ))").filter(t => t.type !== TokenType.EOF);
+    expect(tokens.length).toBe(1);
+    expect(tokens[0]!.type).toBe(TokenType.Arithmetic);
+    expect(tokens[0]!.value).toBe(" 1 + 2 ");
+  });
+
+  test("arithmetic comparison (( x > 5 ))", () => {
+    const tokens = tokenize("(( x > 5 ))").filter(t => t.type !== TokenType.EOF);
+    expect(tokens.length).toBe(1);
+    expect(tokens[0]!.type).toBe(TokenType.Arithmetic);
+    expect(tokens[0]!.value).toBe(" x > 5 ");
+  });
+
+  test("arithmetic command with output redirection", () => {
+    const tokens = tokenize("(( a = 1 )) > out.log").filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.type).toBe(TokenType.Arithmetic);
+    expect(tokens[0]!.value).toBe(" a = 1 ");
+    expect(tokens[1]!.type).toBe(TokenType.Redirect);
+    expect(tokens[1]!.value).toBe(">");
+    expect(tokens[2]!.type).toBe(TokenType.Word);
+    expect(tokens[2]!.value).toBe("out.log");
+  });
+
+  test("nested subshells ((cd /tmp) && ls) is not an arithmetic command", () => {
+    const tokens = tokenize("((cd /tmp) && ls)").filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.type).toBe(TokenType.Operator);
+    expect(tokens[0]!.value).toBe("(");
+    expect(tokens[1]!.type).toBe(TokenType.Operator);
+    expect(tokens[1]!.value).toBe("(");
+    expect(tokens[2]!.type).toBe(TokenType.Word);
+    expect(tokens[2]!.value).toBe("cd");
+    expect(tokens.some(t => t.type === TokenType.Arithmetic)).toBe(false);
+  });
+
+  test("C-style for loop ((;;)) and clauses", () => {
+    const tokens = tokenize("for (( i=0; i<10; i++ )); do echo $i; done").filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.type).toBe(TokenType.Keyword);
+    expect(tokens[0]!.value).toBe("for");
+    expect(tokens[1]!.type).toBe(TokenType.Arithmetic);
+    expect(tokens[1]!.value).toBe(" i=0; i<10; i++ ");
+
+    const emptyFor = tokenize("for ((;;)); do :; done").filter(t => t.type !== TokenType.EOF);
+    expect(emptyFor[1]!.type).toBe(TokenType.Arithmetic);
+    expect(emptyFor[1]!.value).toBe(";;");
+  });
+});
+
+describe("[[ ... ]] test command tokenization and regex matching", () => {
+  test("regex operand =~ consumes pattern whole including parens and spaces", () => {
+    const tokens = tokenize('[[ $str =~ (foo bar|baz qux)+ ]]').filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.type).toBe(TokenType.Keyword);
+    expect(tokens[0]!.value).toBe("[[");
+    expect(tokens[1]!.value).toBe("$str");
+    expect(tokens[2]!.value).toBe("=~");
+    expect(tokens[3]!.type).toBe(TokenType.Word);
+    expect(tokens[3]!.value).toBe("(foo bar|baz qux)+");
+    expect(tokens[4]!.type).toBe(TokenType.Keyword);
+    expect(tokens[4]!.value).toBe("]]");
+  });
+
+  test("regex operand with POSIX character class [[:digit:]]", () => {
+    const tokens = tokenize('[[ $str =~ ^[[:digit:]]+$ ]]').filter(t => t.type !== TokenType.EOF);
+    expect(tokens[2]!.value).toBe("=~");
+    expect(tokens[3]!.value).toBe("^[[:digit:]]+$");
+    expect(tokens[4]!.value).toBe("]]");
+  });
+
+  test("< and > inside [[ ]] are string comparison Operators, not Redirects", () => {
+    const tokens = tokenize('[[ "alpha" < "beta" && "gamma" > "beta" ]]').filter(t => t.type !== TokenType.EOF);
+    const ops = tokens.filter(t => t.type === TokenType.Operator);
+    expect(ops.map(t => t.value)).toEqual(["<", "&&", ">"]);
+    expect(tokens.some(t => t.type === TokenType.Redirect)).toBe(false);
+  });
+
+  test("newlines inside [[ ]] are treated as whitespace", () => {
+    const tokens = tokenize('[[ $a == 1 \n && $b == 2 ]]\n').filter(t => t.type !== TokenType.EOF);
+    expect(tokens.filter(t => t.type === TokenType.Newline).length).toBe(1);
+    expect(tokens[0]!.value).toBe("[[");
+    expect(tokens[tokens.length - 2]!.value).toBe("]]");
+  });
+
+  test("process substitution inside [[ ]] is tokenized as a Word", () => {
+    const tokens = tokenize('[[ <(echo a) == <(echo b) ]]').filter(t => t.type !== TokenType.EOF);
+    expect(tokens[1]!.type).toBe(TokenType.Word);
+    expect(tokens[1]!.value).toBe("<(echo a)");
+    expect(tokens[3]!.type).toBe(TokenType.Word);
+    expect(tokens[3]!.value).toBe("<(echo b)");
+  });
+});
+
+describe("array subscript assignments", () => {
+  test("subscript indices and keys in assignments", () => {
+    const src = 'ARR[0]=first MAP["key"]=second VAR[$idx]+=append ARR[1+2]=eval';
+    const tokens = tokenize(src).filter(t => t.type !== TokenType.EOF);
+    expect(tokens.length).toBe(4);
+    expect(tokens.every(t => t.type === TokenType.Assignment)).toBe(true);
+    expect(tokens[0]!.value).toBe("ARR[0]=first");
+    expect(tokens[1]!.value).toBe('MAP["key"]=second');
+    expect(tokens[2]!.value).toBe("VAR[$idx]+=append");
+    expect(tokens[3]!.value).toBe("ARR[1+2]=eval");
+  });
+});
+
+describe("extended globbing patterns", () => {
+  test("extglobs ?(), *(), +(), @() in argument positions", () => {
+    const tokens = tokenize("ls ?(a|b) *(c|d) +(e|f) @(g|h)").filter(t => t.type !== TokenType.EOF);
+    expect(tokens.length).toBe(5);
+    expect(tokens[0]!.value).toBe("ls");
+    expect(tokens[1]!.value).toBe("?(a|b)");
+    expect(tokens[2]!.value).toBe("*(c|d)");
+    expect(tokens[3]!.value).toBe("+(e|f)");
+    expect(tokens[4]!.value).toBe("@(g|h)");
+    expect(tokens.every(t => t.type === TokenType.Word)).toBe(true);
+  });
+
+  test("negated extglob !(pattern) in argument position", () => {
+    const tokens = tokenize("rm !(keep.txt)").filter(t => t.type !== TokenType.EOF);
+    expect(tokens.length).toBe(2);
+    expect(tokens[0]!.value).toBe("rm");
+    expect(tokens[1]!.type).toBe(TokenType.Word);
+    expect(tokens[1]!.value).toBe("!(keep.txt)");
+  });
+
+  test("pipeline negation ! at command start followed by subshell", () => {
+    const tokens = tokenize("! (echo fail)").filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.type).toBe(TokenType.Keyword);
+    expect(tokens[0]!.value).toBe("!");
+    expect(tokens[1]!.type).toBe(TokenType.Operator);
+    expect(tokens[1]!.value).toBe("(");
+  });
+});
+
+describe("boundary inputs and sad path tokenization", () => {
+  test("empty string produces only EOF", () => {
+    const tokens = tokenize("");
+    expect(tokens.length).toBe(1);
+    expect(tokens[0]!.type).toBe(TokenType.EOF);
+    expect(tokens[0]!.range).toEqual({ start: 0, end: 0 });
+  });
+
+  test("whitespace-only string produces only EOF", () => {
+    const tokens = tokenize("   \t\t   ");
+    expect(tokens.length).toBe(1);
+    expect(tokens[0]!.type).toBe(TokenType.EOF);
+    expect(tokens[0]!.range).toEqual({ start: 8, end: 8 });
+  });
+
+  test("trailing backslash at EOF", () => {
+    const tokens = tokenize("echo \\").filter(t => t.type !== TokenType.EOF);
+    expect(tokens.length).toBe(2);
+    expect(tokens[0]!.value).toBe("echo");
+    expect(tokens[1]!.value).toBe("\\");
+  });
+
+  test("unterminated quotes and backticks flag unterminated: true", () => {
+    expect(tokenize("'unterminated")[0]!.unterminated).toBe(true);
+    expect(tokenize('"unterminated')[0]!.unterminated).toBe(true);
+    expect(tokenize("`unterminated")[0]!.unterminated).toBe(true);
+    expect(tokenize("$'unterminated")[0]!.unterminated).toBe(true);
+    expect(tokenize('FOO="unterminated')[0]!.unterminated).toBe(true);
+  });
+
+  test("multiple heredocs on the same line", () => {
+    const src = "cat <<EOF1 <<EOF2\nfirst body\nEOF1\nsecond body\nEOF2\n";
+    const tokens = tokenize(src);
+    const bodies = tokens.filter(t => t.type === TokenType.HereDocBody);
+    expect(bodies.length).toBe(2);
+    expect(bodies[0]!.value).toBe("first body\n");
+    expect(bodies[1]!.value).toBe("second body\n");
+  });
+
+  test("strip-tabs heredoc <<- strips leading tabs from delimiter match", () => {
+    const src = "cat <<-EOF\n\tline 1\n\t\tline 2\n\tEOF\n";
+    const tokens = tokenize(src);
+    const body = tokens.find(t => t.type === TokenType.HereDocBody);
+    expect(body).toBeDefined();
+    expect(body!.value).toBe("\tline 1\n\t\tline 2\n");
+  });
+
+  test("special and positional parameters", () => {
+    const tokens = tokenize("echo $0 $1 $9 $? $$ $! $# $* $@ $-").filter(t => t.type !== TokenType.EOF);
+    expect(tokens.length).toBe(11);
+    expect(tokens.every(t => t.type === TokenType.Word)).toBe(true);
+    expect(tokens.map(t => t.value)).toEqual([
+      "echo", "$0", "$1", "$9", "$?", "$$", "$!", "$#", "$*", "$@", "$-"
+    ]);
+  });
+});
 
