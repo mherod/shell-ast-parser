@@ -318,6 +318,44 @@ describe("termination", () => {
   });
 });
 
+describe("redirects", () => {
+  test("a redirect with no target word throws, pointing at the newline", () => {
+    try {
+      parseShell("echo hello >\n");
+      throw new Error("expected parseShell to throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ParseError);
+      expect((e as ParseError).token.type).toBe(TokenType.Newline);
+    }
+  });
+
+  test("a redirect with no target word throws, pointing at EOF", () => {
+    try {
+      parseShell("cmd 2>");
+      throw new Error("expected parseShell to throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ParseError);
+      expect((e as ParseError).token.type).toBe(TokenType.EOF);
+    }
+  });
+
+  test("a redirect followed by an operator throws rather than swallowing it", () => {
+    expect(() => parseShell("cmd < ; echo after")).toThrow(ParseError);
+  });
+
+  test("valid redirections still parse cleanly", () => {
+    expect(() => parseShell("cmd > file.txt")).not.toThrow();
+    expect(() => parseShell("cmd 2>&1")).not.toThrow();
+  });
+
+  test("a redirect's range still spans from the operator through the target word", () => {
+    const src = "cmd > file.txt";
+    const redirect = firstOf(parseShell(src), "Redirect");
+    if (redirect === null) throw new Error("expected a Redirect node");
+    expect(src.slice(redirect.range.start, redirect.range.end)).toBe("> file.txt");
+  });
+});
+
 describe("array assignments", () => {
   const assignment = (src: string) => (parseShell(src).commands[0] as any).commands[0].assignments[0];
 

@@ -880,7 +880,7 @@ class Parser {
       };
     }
 
-    const targetTok = this.advance();
+    const targetTok = this.expect(TokenType.Word);
     return {
       type: "Redirect",
       fd,
