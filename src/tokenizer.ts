@@ -18,7 +18,7 @@ export enum TokenType {
   Word = "Word",
   /** An operator: |, ||, &&, ;, ;;, &, (, ), {, } */
   Operator = "Operator",
-  /** Redirection operator: >, >>, <, <<, <<<, >&, <&, >|, <> with optional fd */
+  /** Redirection operator: >, >>, <, <<, <<<, >&, <&, >|, <>, &>, &>> with optional fd */
   Redirect = "Redirect",
   /** Shell keywords: if, then, elif, else, fi, for, while, until, do, done, case, esac, in, function, coproc, select, [[ ]] */
   Keyword = "Keyword",
@@ -217,6 +217,14 @@ class Tokenizer {
         }
       }
 
+      // `&>`/`&>>` redirect both stdout and stderr — checked before the plain
+      // `&` operator so `make &> build.log` doesn't tokenize as a backgrounded
+      // `make` followed by an unrelated `>` redirect.
+      if (ch === "&" && this.src[this.pos + 1] === ">") {
+        this.readAmpersandRedirect();
+        continue;
+      }
+
       if (ch === "|" || ch === "&" || ch === ";") {
         this.readOperator();
         continue;
@@ -369,6 +377,22 @@ class Tokenizer {
       range: { start, end: this.pos },
     });
     this.atCommandStart = true;
+  }
+
+  private readAmpersandRedirect(): void {
+    const start = this.pos;
+    this.pos += 2; // consume "&>"
+    let op = "&>";
+    if (this.src[this.pos] === ">") {
+      op = "&>>";
+      this.pos++;
+    }
+    this.tokens.push({
+      type: TokenType.Redirect,
+      value: op,
+      range: { start, end: this.pos },
+    });
+    this.atCommandStart = false;
   }
 
   private readRedirectOrProcessSub(): void {

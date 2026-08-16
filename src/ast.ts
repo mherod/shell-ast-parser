@@ -314,7 +314,7 @@ export interface Redirect {
   type: "Redirect";
   /** file descriptor number, or null for default */
   fd: number | null;
-  op: ">" | ">>" | "<" | "<<" | "<<-" | "<<<" | ">&" | "<&" | ">|" | "<>";
+  op: ">" | ">>" | "<" | "<<" | "<<-" | "<<<" | ">&" | "<&" | ">|" | "<>" | "&>" | "&>>";
   target: CompoundWord | HereDoc;
   range: Range;
 }

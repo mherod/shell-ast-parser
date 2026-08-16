@@ -356,6 +356,39 @@ describe("redirects", () => {
   });
 });
 
+describe("&> and &>> combined stdout/stderr redirects", () => {
+  test("&> produces one Redirect node with fd null and doesn't background the command", () => {
+    const src = "make &> build.log";
+    const cmd = firstOf(parseShell(src), "SimpleCommand");
+    if (cmd === null) throw new Error("expected a SimpleCommand node");
+    expect(cmd.redirects.length).toBe(1);
+    expect(cmd.redirects[0]!.op).toBe("&>");
+    expect(cmd.redirects[0]!.fd).toBeNull();
+
+    const [command] = parseShell(src).commands;
+    if (command === undefined || command.type !== "Pipeline") throw new Error(`expected a Pipeline, got ${command?.type}`);
+    expect(command.background).toBe(false);
+  });
+
+  test("&>> produces a distinct Redirect node (op &>>) with fd null", () => {
+    const cmd = firstOf(parseShell("make &>> build.log"), "SimpleCommand");
+    if (cmd === null) throw new Error("expected a SimpleCommand node");
+    expect(cmd.redirects.length).toBe(1);
+    expect(cmd.redirects[0]!.op).toBe("&>>");
+    expect(cmd.redirects[0]!.fd).toBeNull();
+  });
+
+  test("a bare & still separates commands and backgrounds the left one", () => {
+    const script = parseShell("make & echo next");
+    expect(script.commands.length).toBe(2);
+    const [first, second] = script.commands;
+    if (first === undefined || first.type !== "Pipeline") throw new Error(`expected a Pipeline, got ${first?.type}`);
+    if (second === undefined || second.type !== "Pipeline") throw new Error(`expected a Pipeline, got ${second?.type}`);
+    expect(first.background).toBe(true);
+    expect(second.background).toBe(false);
+  });
+});
+
 describe("pipelines and lists require both operands", () => {
   test("a trailing pipe with no right-hand command throws", () => {
     expect(() => parseShell("echo hello |\n")).toThrow(ParseError);

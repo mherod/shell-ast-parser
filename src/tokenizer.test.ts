@@ -50,6 +50,20 @@ describe("tokenizer", () => {
     expect(redirs[1]!.value).toBe("2>&");
   });
 
+  test("&> and &>> tokenize as one Redirect, not & followed by a redirect", () => {
+    const redir = tokenize("make &> build.log").filter(t => t.type === TokenType.Redirect);
+    expect(redir.map(t => t.value)).toEqual(["&>"]);
+
+    const redirAppend = tokenize("make &>> build.log").filter(t => t.type === TokenType.Redirect);
+    expect(redirAppend.map(t => t.value)).toEqual(["&>>"]);
+  });
+
+  test("a bare & (not followed by >) still tokenizes as the background operator", () => {
+    const vals = values("make & echo next");
+    expect(vals).toContain("&");
+    expect(tokenize("make & echo next").some(t => t.type === TokenType.Redirect)).toBe(false);
+  });
+
   test("heredoc", () => {
     const tokens = tokenize("cat <<EOF\nhello world\nEOF\n");
     expect(tokens.some(t => t.type === TokenType.Redirect && t.value === "<<")).toBe(true);
