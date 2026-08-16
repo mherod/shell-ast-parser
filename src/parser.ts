@@ -691,7 +691,7 @@ class Parser {
     const tok = this.peek();
 
     // Compound commands
-    if (tok.type === TokenType.Keyword) {
+    if (tok.type === TokenType.Keyword || ["if", "for", "select", "while", "until", "case", "function", "coproc", "[["].includes(tok.value) || (this.dialect === "zsh" && tok.value === "repeat")) {
       switch (tok.value) {
         case "if": return this.parseIf();
         case "for": return this.parseFor();
@@ -994,7 +994,7 @@ class Parser {
   }
 
   private parseIf(): IfClause {
-    const start = this.expect(TokenType.Keyword, "if").range.start;
+    const start = this.expectWord("if").range.start;
     this.skipNewlines();
     const condition = this.wrapScript(this.parseCompoundList(false, this.dialect === "zsh", this.dialect === "zsh"));
 
@@ -1150,7 +1150,7 @@ class Parser {
   }
 
   private parseFor(): ForClause | ArithmeticForClause {
-    const start = this.expect(TokenType.Keyword, "for").range.start;
+    const start = this.expectWord("for").range.start;
 
     if (this.at(TokenType.Arithmetic)) {
       return this.parseArithmeticFor(start);
@@ -1240,7 +1240,7 @@ class Parser {
 
   /** `select name [in words]; do list; done` — grammar mirrors `for`, minus its zsh extensions. */
   private parseSelect(): SelectClause {
-    const start = this.expect(TokenType.Keyword, "select").range.start;
+    const start = this.expectWord("select").range.start;
     const variable = this.expect(TokenType.Word).value;
 
     let words: CompoundWord[] | null = null;
@@ -1278,7 +1278,7 @@ class Parser {
    * a word rather than a number, since the shell expands it first.
    */
   private parseRepeat(): RepeatClause {
-    const start = this.expect(TokenType.Keyword, "repeat").range.start;
+    const start = this.expectWord("repeat").range.start;
     const count = this.tokenToCompoundWord(this.advance());
 
     if (this.atAny(TokenType.Operator, ";")) this.advance();
@@ -1307,7 +1307,7 @@ class Parser {
   }
 
   private parseWhile(): WhileClause {
-    const start = this.expect(TokenType.Keyword, "while").range.start;
+    const start = this.expectWord("while").range.start;
     this.skipNewlines();
     const condition = this.wrapScript(this.parseCompoundList());
     this.expectWord("do");
@@ -1326,7 +1326,7 @@ class Parser {
   }
 
   private parseUntil(): UntilClause {
-    const start = this.expect(TokenType.Keyword, "until").range.start;
+    const start = this.expectWord("until").range.start;
     this.skipNewlines();
     const condition = this.wrapScript(this.parseCompoundList());
     this.expectWord("do");
@@ -1345,7 +1345,7 @@ class Parser {
   }
 
   private parseCase(): CaseClause {
-    const start = this.expect(TokenType.Keyword, "case").range.start;
+    const start = this.expectWord("case").range.start;
     const wordTok = this.advance();
     const word = this.tokenToCompoundWord(wordTok);
     this.skipNewlines();
@@ -1818,12 +1818,11 @@ class Parser {
     const start = this.expect(TokenType.Keyword, "coproc").range.start;
 
     let name: string | null = null;
-    // Check if next token is a name (not a keyword that starts a command)
+    // Check if next token is a name (not a keyword or opener that starts a command)
     if (this.at(TokenType.Word)) {
       const next = this.tokens[this.pos + 1];
-      // `{` after a name is an Operator, not a Keyword — match on value
-      if (next && (next.value === "{" ||
-          (next.type === TokenType.Keyword && ["while", "for", "if", "until", "case"].includes(next.value)))) {
+      if (next && (next.value === "{" || next.value === "(" ||
+          ["while", "for", "if", "until", "case", "select", "repeat"].includes(next.value))) {
         name = this.advance().value;
       }
     }

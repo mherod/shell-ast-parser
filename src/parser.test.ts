@@ -2707,6 +2707,387 @@ describe("function names with dots, dashes, and colons", () => {
   });
 });
 
+describe("coproc compound command parsing", () => {
+  test("anonymous coproc with brace group body", () => {
+    const script = parseShell("coproc { echo 1; }");
+    const pipeline = script.commands[0]! as any;
+    const coproc = pipeline.commands[0];
+    expect(coproc.type).toBe("Coproc");
+    expect(coproc.name).toBeNull();
+    expect(coproc.body.type).toBe("BraceGroup");
+    expect(coproc.redirects.length).toBe(0);
+  });
 
+  test("named coproc with brace group body", () => {
+    const script = parseShell("coproc MYPROC { echo 2; }");
+    const pipeline = script.commands[0]! as any;
+    const coproc = pipeline.commands[0];
+    expect(coproc.type).toBe("Coproc");
+    expect(coproc.name).toBe("MYPROC");
+    expect(coproc.body.type).toBe("BraceGroup");
+  });
 
+  test("anonymous coproc with subshell body", () => {
+    const script = parseShell("coproc (echo 3)");
+    const pipeline = script.commands[0]! as any;
+    const coproc = pipeline.commands[0];
+    expect(coproc.type).toBe("Coproc");
+    expect(coproc.name).toBeNull();
+    expect(coproc.body.type).toBe("Subshell");
+  });
 
+  test("named coproc with subshell body", () => {
+    const script = parseShell("coproc MYPROC (echo 4)");
+    const pipeline = script.commands[0]! as any;
+    const coproc = pipeline.commands[0];
+    expect(coproc.type).toBe("Coproc");
+    expect(coproc.name).toBe("MYPROC");
+    expect(coproc.body.type).toBe("Subshell");
+  });
+
+  test("named coproc with while loop body", () => {
+    const script = parseShell("coproc WORKER while true; do echo ping; sleep 1; done");
+    const pipeline = script.commands[0]! as any;
+    const coproc = pipeline.commands[0];
+    expect(coproc.type).toBe("Coproc");
+    expect(coproc.name).toBe("WORKER");
+    expect(coproc.body.type).toBe("WhileClause");
+  });
+
+  test("coproc with redirection", () => {
+    const script = parseShell("coproc { echo 1; } > /dev/null 2>&1");
+    const pipeline = script.commands[0]! as any;
+    const coproc = pipeline.commands[0];
+    expect(coproc.type).toBe("Coproc");
+    expect(coproc.body.redirects.length).toBe(2);
+    expect(coproc.body.redirects[0].op).toBe(">");
+    expect(coproc.body.redirects[1].op).toBe(">&");
+  });
+});
+
+describe("select loop compound command parsing", () => {
+  test("select with explicit word list", () => {
+    const script = parseShell("select fruit in apple orange banana; do echo \"$fruit\"; done");
+    const pipeline = script.commands[0]! as any;
+    const select = pipeline.commands[0];
+    expect(select.type).toBe("SelectClause");
+    expect(select.variable).toBe("fruit");
+    expect(select.words).not.toBeNull();
+    expect(select.words.length).toBe(3);
+    expect(select.words[0].parts[0].value).toBe("apple");
+    expect(select.words[1].parts[0].value).toBe("orange");
+    expect(select.words[2].parts[0].value).toBe("banana");
+    expect(select.body.commands.length).toBe(1);
+  });
+
+  test("select with omitted in words list", () => {
+    const script = parseShell("select fruit; do echo \"$fruit\"; done");
+    const pipeline = script.commands[0]! as any;
+    const select = pipeline.commands[0];
+    expect(select.type).toBe("SelectClause");
+    expect(select.variable).toBe("fruit");
+    expect(select.words).toBeNull();
+    expect(select.body.commands.length).toBe(1);
+  });
+
+  test("select loop with redirection", () => {
+    const script = parseShell("select item in a b; do break; done < choices.txt");
+    const pipeline = script.commands[0]! as any;
+    const select = pipeline.commands[0];
+    expect(select.type).toBe("SelectClause");
+    expect(select.redirects.length).toBe(1);
+    expect(select.redirects[0].op).toBe("<");
+  });
+});
+
+describe("until loop compound command parsing", () => {
+  test("until loop with condition and body", () => {
+    const script = parseShell("until [ -f /tmp/lock ]; do sleep 1; done");
+    const pipeline = script.commands[0]! as any;
+    const until = pipeline.commands[0];
+    expect(until.type).toBe("UntilClause");
+    expect(until.condition.commands.length).toBe(1);
+    expect(until.body.commands.length).toBe(1);
+  });
+
+  test("until loop with negated condition and redirection", () => {
+    const script = parseShell("until ! grep -q ready /tmp/status; do echo wait; done > out.log");
+    const pipeline = script.commands[0]! as any;
+    const until = pipeline.commands[0];
+    expect(until.type).toBe("UntilClause");
+    expect(until.redirects.length).toBe(1);
+    expect(until.redirects[0].op).toBe(">");
+  });
+});
+
+describe("let arithmetic command parsing", () => {
+  test("let with multiple arithmetic expressions", () => {
+    const script = parseShell('let a=1 b=2 "c = a + b"');
+    const pipeline = script.commands[0]! as any;
+    const letCmd = pipeline.commands[0];
+    expect(letCmd.type).toBe("LetCommand");
+    expect(letCmd.expressions.length).toBe(3);
+    expect(letCmd.expressions[0].text).toBe("a=1");
+    expect(letCmd.expressions[0].parsed).not.toBeNull();
+    expect(letCmd.expressions[2].text).toBe("c = a + b");
+    expect(letCmd.expressions[2].parsed).not.toBeNull();
+  });
+
+  test("let with increment and decrement operators", () => {
+    const script = parseShell("let ++x x--");
+    const pipeline = script.commands[0]! as any;
+    const letCmd = pipeline.commands[0];
+    expect(letCmd.type).toBe("LetCommand");
+    expect(letCmd.expressions.length).toBe(2);
+    expect(letCmd.expressions[0].parsed.type).toBe("ArithmeticUpdate");
+    expect(letCmd.expressions[0].parsed.prefix).toBe(true);
+    expect(letCmd.expressions[1].parsed.type).toBe("ArithmeticUpdate");
+    expect(letCmd.expressions[1].parsed.prefix).toBe(false);
+  });
+
+  test("let with preceding assignments and redirects", () => {
+    const script = parseShell('FOO=1 let "res = FOO * 2" > let.log');
+    const pipeline = script.commands[0]! as any;
+    const letCmd = pipeline.commands[0];
+    expect(letCmd.type).toBe("LetCommand");
+    expect(letCmd.assignments.length).toBe(1);
+    expect(letCmd.assignments[0].name).toBe("FOO");
+    expect(letCmd.redirects.length).toBe(1);
+    expect(letCmd.redirects[0].op).toBe(">");
+  });
+});
+
+describe("repeat loop parsing (zsh dialect vs bash)", () => {
+  test("zsh repeat loop with literal count", () => {
+    const script = parseShell("repeat 5 do echo tick; done", { dialect: "zsh" });
+    const pipeline = script.commands[0]! as any;
+    const repeat = pipeline.commands[0];
+    expect(repeat.type).toBe("RepeatClause");
+    expect(repeat.count.parts[0].value).toBe("5");
+    expect(repeat.body.commands.length).toBe(1);
+  });
+
+  test("zsh repeat loop with expansion count and redirect", () => {
+    const script = parseShell("repeat $count do echo $i; done > repeat.log", { dialect: "zsh" });
+    const pipeline = script.commands[0]! as any;
+    const repeat = pipeline.commands[0];
+    expect(repeat.type).toBe("RepeatClause");
+    expect(repeat.count.parts[0].type).toBe("VariableExpansion");
+    expect(repeat.redirects.length).toBe(1);
+  });
+
+  test("bash treats repeat as a simple command name", () => {
+    const script = parseShell("repeat 5", { dialect: "bash" });
+    const pipeline = script.commands[0]! as any;
+    const cmd = pipeline.commands[0];
+    expect(cmd.type).toBe("SimpleCommand");
+    expect(cmd.name.parts[0].value).toBe("repeat");
+  });
+});
+
+describe("test command styles, operators, and grouping", () => {
+  test("test builtin with -a logical operator", () => {
+    const script = parseShell("test -f file.txt -a -d dir");
+    const pipeline = script.commands[0]! as any;
+    const testCmd = pipeline.commands[0];
+    expect(testCmd.type).toBe("TestCommand");
+    expect(testCmd.style).toBe("test");
+    expect(testCmd.expression.type).toBe("TestLogical");
+    expect(testCmd.expression.op).toBe("-a");
+  });
+
+  test("[ builtin with -o logical operator", () => {
+    const script = parseShell('[ -z "$a" -o -n "$b" ]');
+    const pipeline = script.commands[0]! as any;
+    const testCmd = pipeline.commands[0];
+    expect(testCmd.type).toBe("TestCommand");
+    expect(testCmd.style).toBe("[");
+    expect(testCmd.expression.type).toBe("TestLogical");
+    expect(testCmd.expression.op).toBe("-o");
+  });
+
+  test("[[ keyword with nested parens and logical operators", () => {
+    const script = parseShell('[[ -f a && ( -d b || -f c ) ]]');
+    const pipeline = script.commands[0]! as any;
+    const testCmd = pipeline.commands[0];
+    expect(testCmd.type).toBe("TestCommand");
+    expect(testCmd.style).toBe("[[");
+    expect(testCmd.expression.type).toBe("TestLogical");
+    expect(testCmd.expression.op).toBe("&&");
+  });
+
+  test("test negation with ! operator", () => {
+    const script = parseShell("[[ ! -f missing.txt ]]");
+    const pipeline = script.commands[0]! as any;
+    const testCmd = pipeline.commands[0];
+    expect(testCmd.type).toBe("TestCommand");
+    expect(testCmd.expression.type).toBe("TestNegation");
+  });
+
+  test("string comparison operators < and > in [[ ]]", () => {
+    const script = parseShell('[[ "alpha" < "beta" ]]');
+    const pipeline = script.commands[0]! as any;
+    const testCmd = pipeline.commands[0];
+    expect(testCmd.type).toBe("TestCommand");
+    expect(testCmd.expression.type).toBe("TestBinary");
+    expect(testCmd.expression.op).toBe("<");
+  });
+
+  test("bare value test expressions", () => {
+    const s1 = parseShell("[[ $flag ]]");
+    expect((s1.commands[0] as any).commands[0].expression.type).toBe("TestValue");
+
+    const s2 = parseShell('[ "$flag" ]');
+    expect((s2.commands[0] as any).commands[0].expression.type).toBe("TestValue");
+  });
+
+  test("preceding environment assignments on [ builtin", () => {
+    const script = parseShell('FOO=bar [ "$FOO" = "bar" ]');
+    const pipeline = script.commands[0]! as any;
+    const testCmd = pipeline.commands[0];
+    expect(testCmd.type).toBe("TestCommand");
+    expect(testCmd.assignments.length).toBe(1);
+    expect(testCmd.assignments[0].name).toBe("FOO");
+  });
+});
+
+describe("case clause terminators and fallthrough", () => {
+  test("fallthrough terminator ;&", () => {
+    const script = parseShell("case $x in a) echo 1;& b) echo 2;; esac");
+    const caseCmd = (script.commands[0] as any).commands[0];
+    expect(caseCmd.items[0].terminator).toBe(";&");
+    expect(caseCmd.items[1].terminator).toBe(";;");
+  });
+
+  test("continue testing terminator ;;&", () => {
+    const script = parseShell("case $x in a*) echo 1;;& *b) echo 2;; esac");
+    const caseCmd = (script.commands[0] as any).commands[0];
+    expect(caseCmd.items[0].terminator).toBe(";;&");
+  });
+
+  test("omitted terminator on last case item before esac", () => {
+    const script = parseShell("case $x in a) echo 1;; b) echo 2\nesac");
+    const caseCmd = (script.commands[0] as any).commands[0];
+    expect(caseCmd.items[0].terminator).toBe(";;");
+    expect(caseCmd.items[1].terminator).toBeNull();
+  });
+
+  test("empty case item body", () => {
+    const script = parseShell("case $x in a) ;; b) echo 2;; esac");
+    const caseCmd = (script.commands[0] as any).commands[0];
+    expect(caseCmd.items[0].body.commands.length).toBe(0);
+    expect(caseCmd.items[1].body.commands.length).toBe(1);
+  });
+
+  test("multiple pattern alternatives in one case item", () => {
+    const script = parseShell("case $x in a | b | c) echo match;; esac");
+    const caseCmd = (script.commands[0] as any).commands[0];
+    expect(caseCmd.items[0].patterns.length).toBe(3);
+    expect(caseCmd.items[0].patterns[0].parts[0].value).toBe("a");
+    expect(caseCmd.items[0].patterns[1].parts[0].value).toBe("b");
+    expect(caseCmd.items[0].patterns[2].parts[0].value).toBe("c");
+  });
+
+  test("case clause with redirection", () => {
+    const script = parseShell("case $x in a) echo 1;; esac < input.txt");
+    const caseCmd = (script.commands[0] as any).commands[0];
+    expect(caseCmd.type).toBe("CaseClause");
+    expect(caseCmd.redirects.length).toBe(1);
+    expect(caseCmd.redirects[0].op).toBe("<");
+  });
+});
+
+describe("declaration builtins and array literal assignments in AST", () => {
+  test("pure environment assignments with no command name", () => {
+    const script = parseShell("A=1 B=2 C=3");
+    const cmd = (script.commands[0] as any).commands[0];
+    expect(cmd.type).toBe("SimpleCommand");
+    expect(cmd.name).toBeNull();
+    expect(cmd.assignments.length).toBe(3);
+    expect(cmd.assignments[0].name).toBe("A");
+    expect(cmd.assignments[1].name).toBe("B");
+    expect(cmd.assignments[2].name).toBe("C");
+  });
+
+  test("export with multiple assignment arguments", () => {
+    const script = parseShell("export A=1 B=2");
+    const cmd = (script.commands[0] as any).commands[0];
+    expect(cmd.type).toBe("SimpleCommand");
+    expect(cmd.name.parts[0].value).toBe("export");
+    expect(cmd.args.length).toBe(2);
+    expect(cmd.args[0].type).toBe("Assignment");
+    expect(cmd.args[0].name).toBe("A");
+    expect(cmd.args[1].type).toBe("Assignment");
+    expect(cmd.args[1].name).toBe("B");
+  });
+
+  test("declare with array literal assignment in args", () => {
+    const script = parseShell("declare -a ARR=(1 2 3)");
+    const cmd = (script.commands[0] as any).commands[0];
+    expect(cmd.name.parts[0].value).toBe("declare");
+    expect(cmd.args[0].type).toBe("CompoundWord");
+    expect(cmd.args[1].type).toBe("Assignment");
+    expect(cmd.args[1].name).toBe("ARR");
+    expect(cmd.args[1].value.type).toBe("ArrayLiteral");
+    expect(cmd.args[1].value.elements.length).toBe(3);
+  });
+
+  test("array append assignment", () => {
+    const script = parseShell("ARR+=(x y)");
+    const cmd = (script.commands[0] as any).commands[0];
+    expect(cmd.assignments[0].name).toBe("ARR");
+    expect(cmd.assignments[0].append).toBe(true);
+    expect(cmd.assignments[0].value.type).toBe("ArrayLiteral");
+    expect(cmd.assignments[0].value.elements.length).toBe(2);
+  });
+});
+
+describe("syntax error handling and ParseError diagnostics", () => {
+  test("unclosed if clause throws ParseError", () => {
+    expect(() => parseShell("if true; then echo 1")).toThrow(ParseError);
+  });
+
+  test("unclosed for loop throws ParseError", () => {
+    expect(() => parseShell("for x in a b; do echo $x")).toThrow(ParseError);
+  });
+
+  test("unclosed while loop throws ParseError", () => {
+    expect(() => parseShell("while true; do echo 1")).toThrow(ParseError);
+  });
+
+  test("unclosed until loop throws ParseError", () => {
+    expect(() => parseShell("until false; do echo 1")).toThrow(ParseError);
+  });
+
+  test("unclosed case clause throws ParseError", () => {
+    expect(() => parseShell("case $x in a) echo 1;;")).toThrow(ParseError);
+  });
+
+  test("unclosed select loop throws ParseError", () => {
+    expect(() => parseShell("select x in a b; do echo 1")).toThrow(ParseError);
+  });
+
+  test("unclosed subshell throws ParseError", () => {
+    expect(() => parseShell("( echo 1; echo 2")).toThrow(ParseError);
+  });
+
+  test("unclosed brace group throws ParseError", () => {
+    expect(() => parseShell("{ echo 1;")).toThrow(ParseError);
+  });
+
+  test("unclosed [[ test command throws ParseError", () => {
+    expect(() => parseShell("[[ $a == 1")).toThrow(ParseError);
+  });
+
+  test("stray closer without opener throws ParseError", () => {
+    expect(() => parseShell("echo 1; fi")).toThrow(ParseError);
+  });
+
+  test("missing do keyword in loop throws ParseError", () => {
+    expect(() => parseShell("for x in a b; echo $x; done")).toThrow(ParseError);
+  });
+
+  test("missing then keyword in if clause throws ParseError", () => {
+    expect(() => parseShell("if true; echo 1; fi")).toThrow(ParseError);
+  });
+});
