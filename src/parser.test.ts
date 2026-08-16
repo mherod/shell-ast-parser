@@ -2668,6 +2668,10 @@ describe("time reserved keyword on pipelines", () => {
 });
 
 describe("function names with dots, dashes, and colons", () => {
+  test("a function definition cannot silently discard a prefix assignment", () => {
+    expect(() => parseShell("X=1 f() { :; }")).toThrow(ParseError);
+  });
+
   test("foo.bar() { echo 1; } parses as FunctionDef with name 'foo.bar'", () => {
     const script = parseShell("foo.bar() { echo 1; }");
     const pipeline = script.commands[0]! as any;

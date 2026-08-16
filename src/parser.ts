@@ -764,6 +764,9 @@ class Parser {
       const next2 = this.tokens[this.pos + 2];
       if (next1?.type === TokenType.Operator && next1.value === "(" &&
           next2?.type === TokenType.Operator && next2.value === ")") {
+        if (assignments.length > 0 || redirects.length > 0) {
+          throw new ParseError("Function definitions cannot have command prefixes", this.peek());
+        }
         return this.parseFunctionDef();
       }
     }
