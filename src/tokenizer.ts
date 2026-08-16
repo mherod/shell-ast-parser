@@ -47,6 +47,8 @@ export interface Token {
    * Absent when value and source agree, which is nearly always.
    */
   joins?: number[];
+  /** A `'`, `"`, or `` ` `` inside this token's text never found its closing match before EOF. */
+  unterminated?: true;
 }
 
 const KEYWORDS = new Set([
@@ -515,6 +517,7 @@ class Tokenizer {
     let value = "";
     let hasEquals = false;
     let equalsPos = -1;
+    let unterminated = false;
     const joins: number[] = [];
 
     while (this.pos < this.src.length) {
@@ -560,6 +563,8 @@ class Tokenizer {
         if (this.pos < this.src.length) {
           value += "'";
           this.pos++;
+        } else {
+          unterminated = true;
         }
         continue;
       }
@@ -582,7 +587,9 @@ class Tokenizer {
             // at the quote inside the substitution
             value += this.readDollar(true);
           } else if (c === "`") {
-            value += this.readBacktick();
+            const bt = this.readBacktick();
+            value += bt.text;
+            if (!bt.closed) unterminated = true;
           } else {
             value += c;
             this.pos++;
@@ -591,6 +598,8 @@ class Tokenizer {
         if (this.pos < this.src.length) {
           value += '"';
           this.pos++;
+        } else {
+          unterminated = true;
         }
         continue;
       }
@@ -601,7 +610,9 @@ class Tokenizer {
       }
 
       if (ch === "`") {
-        value += this.readBacktick();
+        const bt = this.readBacktick();
+        value += bt.text;
+        if (!bt.closed) unterminated = true;
         continue;
       }
 
@@ -696,6 +707,7 @@ class Tokenizer {
           value,
           range: { start, end: this.pos },
           ...(joins.length > 0 ? { joins } : {}),
+          ...(unterminated ? { unterminated: true as const } : {}),
         });
         return;
       }
@@ -708,6 +720,7 @@ class Tokenizer {
       value,
       range: { start, end: this.pos },
       ...(joins.length > 0 ? { joins } : {}),
+      ...(unterminated ? { unterminated: true as const } : {}),
     });
     this.atCommandStart = false;
 
@@ -908,7 +921,7 @@ class Tokenizer {
   }
 
   /** Read a backtick command substitution */
-  private readBacktick(): string {
+  private readBacktick(): { text: string; closed: boolean } {
     let result = "`";
     this.pos++; // skip `
     while (this.pos < this.src.length && this.src[this.pos] !== "`") {
@@ -924,11 +937,12 @@ class Tokenizer {
         this.pos++;
       }
     }
-    if (this.pos < this.src.length) {
+    const closed = this.pos < this.src.length;
+    if (closed) {
       result += "`";
       this.pos++;
     }
-    return result;
+    return { text: result, closed };
   }
 
   /** Read a parenthesized group: ( ... ) tracking nesting */

@@ -75,6 +75,19 @@ describe("tokenizer", () => {
     expect(tokens[1]!.value).toBe("'hello world'");
   });
 
+  test("an unclosed quote or backtick flags its token unterminated", () => {
+    expect(tokenize("echo 'unclosed")[1]!.unterminated).toBe(true);
+    expect(tokenize('echo "unclosed')[1]!.unterminated).toBe(true);
+    expect(tokenize("echo `unclosed")[1]!.unterminated).toBe(true);
+    expect(tokenize('NAME="unclosed')[0]!.unterminated).toBe(true);
+  });
+
+  test("a closed quote or backtick leaves the token unflagged", () => {
+    expect(tokenize("echo 'closed'")[1]!.unterminated).toBeUndefined();
+    expect(tokenize('echo "closed"')[1]!.unterminated).toBeUndefined();
+    expect(tokenize("echo `closed`")[1]!.unterminated).toBeUndefined();
+  });
+
   test("double quoted string with escapes", () => {
     const tokens = tokenize('echo "hello \\"world\\""');
     expect(tokens[1]!.type).toBe(TokenType.Word);

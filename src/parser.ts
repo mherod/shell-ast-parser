@@ -778,6 +778,9 @@ class Parser {
 
   private parseAssignment(): Assignment {
     const tok = this.expect(TokenType.Assignment);
+    if (tok.unterminated) {
+      throw new ParseError("Unterminated quote", tok);
+    }
     const eqIdx = tok.value.indexOf("=");
     const lhs = tok.value.slice(0, eqIdx);
     const append = lhs.endsWith("+");
@@ -1747,6 +1750,9 @@ class Parser {
   }
 
   private tokenToCompoundWord(tok: Token): CompoundWord {
+    if (tok.unterminated) {
+      throw new ParseError("Unterminated quote", tok);
+    }
     const parts = this.parseWordParts(tokenSourceText(tok), tok.range);
     return {
       type: "CompoundWord",

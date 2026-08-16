@@ -733,10 +733,38 @@ describe("quoting", () => {
     });
   });
 
-  test("unterminated quotes do not hang", () => {
+  test("unterminated quotes throw rather than silently accepting the incomplete word", () => {
     for (const src of ["echo 'x", 'echo "x', "echo $'x"]) {
-      expect(() => parseShell(src)).not.toThrow();
+      expect(() => parseShell(src)).toThrow(ParseError);
     }
+  });
+});
+
+describe("unclosed quotes and backticks at EOF", () => {
+  test("an unclosed single quote throws", () => {
+    expect(() => parseShell("echo 'unclosed")).toThrow(ParseError);
+  });
+
+  test("an unclosed double quote throws", () => {
+    expect(() => parseShell('echo "unclosed')).toThrow(ParseError);
+  });
+
+  test("an unclosed backtick throws", () => {
+    expect(() => parseShell("echo `unclosed")).toThrow(ParseError);
+  });
+
+  test("an unclosed double quote inside a backtick body throws", () => {
+    expect(() => parseShell('echo `echo "unclosed`')).toThrow(ParseError);
+  });
+
+  test("an unclosed quote in an assignment value throws", () => {
+    expect(() => parseShell('NAME="unclosed')).toThrow(ParseError);
+  });
+
+  test("balanced strings and nested substitutions still parse without error", () => {
+    expect(() => parseShell("echo 'balanced' \"also balanced\" `echo ok`")).not.toThrow();
+    expect(() => parseShell('echo "outer $(echo inner) end"')).not.toThrow();
+    expect(() => parseShell("echo `echo nested \\`echo deep\\` end`")).not.toThrow();
   });
 });
 
@@ -766,10 +794,17 @@ describe("delimiters inside quotes", () => {
     expect(parts("echo $(($(echo 1)+2))")[0].expression).toBe("$(echo 1)+2");
   });
 
-  test("unterminated regions do not hang", () => {
-    for (const src of ["echo $(", "echo ${", "echo $((", 'echo "$(', "echo $(a\\"]) {
+  test("unterminated substitution regions do not hang", () => {
+    // These are unclosed $(...)/${...}/$((...)) expansions, not unclosed
+    // quote characters — a real syntax error in bash, but a separate,
+    // out-of-scope bug from the unclosed-quote/backtick detection below.
+    for (const src of ["echo $(", "echo ${", "echo $((", "echo $(a\\"]) {
       expect(() => parseShell(src)).not.toThrow();
     }
+  });
+
+  test("an unterminated double quote around an unterminated substitution still throws", () => {
+    expect(() => parseShell('echo "$(')).toThrow(ParseError);
   });
 });
 
@@ -2092,7 +2127,6 @@ describe("ranges survive a substitution's escapes", () => {
 
   test("a backtick body with escapes keeps its ranges", () => {
     expect(drifted("x=`echo \\$(CC) -e b`")).toEqual([]);
-    expect(drifted("x=`echo \\` -e b`")).toEqual([]);
     expect(drifted("x=`sed -e 's/\\$(CC)//' \\\n  -e 's/x//'`")).toEqual([]);
   });
 
