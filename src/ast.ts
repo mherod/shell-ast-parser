@@ -372,6 +372,10 @@ export interface Pipeline {
   type: "Pipeline";
   /** ! prefix negates exit status */
   negated: boolean;
+  /** time keyword prefixes the pipeline */
+  timed: boolean;
+  /** -p flag passed to time keyword (POSIX output format) */
+  posixFormat?: boolean;
   commands: Command[];
   /** terminated by & rather than ; or a newline */
   background: boolean;

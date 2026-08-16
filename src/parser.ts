@@ -638,17 +638,30 @@ class Parser {
     return left;
   }
 
-  // ── Pipeline: [!] command (| command)* ─────────────────────────
+  // ── Pipeline: [time [-p]] [!] command (| command)* ─────────────
 
   private parsePipeline(): Pipeline {
     const start = this.peek().range.start;
     let negated = false;
+    let timed = false;
+    let posixFormat: boolean | undefined = undefined;
 
-    // A lone `!` always negates; no command is named that, so accept it however
-    // the tokenizer classified it
-    if (this.atAny(TokenType.Keyword, "!") || this.atAny(TokenType.Word, "!")) {
-      this.advance();
-      negated = true;
+    while (true) {
+      if (!negated && (this.atAny(TokenType.Keyword, "!") || this.atAny(TokenType.Word, "!"))) {
+        this.advance();
+        negated = true;
+        continue;
+      }
+      if (!timed && (this.atAny(TokenType.Keyword, "time") || this.atAny(TokenType.Word, "time"))) {
+        this.advance();
+        timed = true;
+        if (this.atAny(TokenType.Word, "-p")) {
+          this.advance();
+          posixFormat = true;
+        }
+        continue;
+      }
+      break;
     }
 
     const commands: Command[] = [this.parseCommand()];
@@ -664,6 +677,8 @@ class Parser {
     return {
       type: "Pipeline",
       negated,
+      timed,
+      ...(posixFormat ? { posixFormat: true } : {}),
       commands,
       background: false,
       range: { start, end },

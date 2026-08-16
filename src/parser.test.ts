@@ -2587,4 +2587,77 @@ describe("tricky parser test bed cases", () => {
   });
 });
 
+describe("time reserved keyword on pipelines", () => {
+  test("time ls | wc -l parses into Pipeline with timed=true and 2 commands", () => {
+    const script = parseShell("time ls | wc -l");
+    const pipeline = script.commands[0]! as any;
+    expect(pipeline.type).toBe("Pipeline");
+    expect(pipeline.timed).toBe(true);
+    expect(pipeline.negated).toBe(false);
+    expect(pipeline.posixFormat).toBeUndefined();
+    expect(pipeline.commands.length).toBe(2);
+    expect(pipeline.commands[0].name.parts[0].value).toBe("ls");
+    expect(pipeline.commands[1].name.parts[0].value).toBe("wc");
+  });
+
+  test("time -p cmd parses into Pipeline with timed=true and posixFormat=true", () => {
+    const script = parseShell("time -p cmd");
+    const pipeline = script.commands[0]! as any;
+    expect(pipeline.type).toBe("Pipeline");
+    expect(pipeline.timed).toBe(true);
+    expect(pipeline.posixFormat).toBe(true);
+    expect(pipeline.negated).toBe(false);
+    expect(pipeline.commands.length).toBe(1);
+    expect(pipeline.commands[0].name.parts[0].value).toBe("cmd");
+  });
+
+  test("! time cmd and time ! cmd parse into Pipeline with timed=true and negated=true", () => {
+    const script1 = parseShell("! time cmd");
+    const p1 = script1.commands[0]! as any;
+    expect(p1.timed).toBe(true);
+    expect(p1.negated).toBe(true);
+    expect(p1.commands[0].name.parts[0].value).toBe("cmd");
+
+    const script2 = parseShell("time ! cmd");
+    const p2 = script2.commands[0]! as any;
+    expect(p2.timed).toBe(true);
+    expect(p2.negated).toBe(true);
+    expect(p2.commands[0].name.parts[0].value).toBe("cmd");
+
+    const script3 = parseShell("time -p ! cmd1 | cmd2");
+    const p3 = script3.commands[0]! as any;
+    expect(p3.timed).toBe(true);
+    expect(p3.posixFormat).toBe(true);
+    expect(p3.negated).toBe(true);
+    expect(p3.commands.length).toBe(2);
+  });
+
+  test("non-command positions continue to parse time as a regular word", () => {
+    const script = parseShell("echo time");
+    const pipeline = script.commands[0]! as any;
+    expect(pipeline.timed).toBe(false);
+    expect(pipeline.commands[0].name.parts[0].value).toBe("echo");
+    expect(pipeline.commands[0].args[0].parts[0].value).toBe("time");
+  });
+
+  test("time compound commands parse cleanly", () => {
+    const script1 = parseShell("time for i in 1 2; do echo $i; done");
+    const p1 = script1.commands[0]! as any;
+    expect(p1.timed).toBe(true);
+    expect(p1.commands[0].type).toBe("ForClause");
+
+    const script2 = parseShell("time -p { echo 1; }");
+    const p2 = script2.commands[0]! as any;
+    expect(p2.timed).toBe(true);
+    expect(p2.posixFormat).toBe(true);
+    expect(p2.commands[0].type).toBe("BraceGroup");
+
+    const script3 = parseShell("time (echo 1)");
+    const p3 = script3.commands[0]! as any;
+    expect(p3.timed).toBe(true);
+    expect(p3.commands[0].type).toBe("Subshell");
+  });
+});
+
+
 

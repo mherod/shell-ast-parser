@@ -55,7 +55,7 @@ const KEYWORDS = new Set([
   "if", "then", "elif", "else", "fi",
   "for", "while", "until", "do", "done",
   "case", "esac", "in",
-  "function", "coproc", "select",
+  "function", "coproc", "select", "time",
   "!", "[[", "]]",
 ]);
 
@@ -114,6 +114,7 @@ class Tokenizer {
   private afterRegexOperator: boolean = false;
   /** Whether the next word is the pattern operand of `==` or `!=` (zsh) */
   private afterPatternOperator: boolean = false;
+  private afterTimeKeyword: boolean = false;
   private dialect: Dialect;
   /**
    * Functions defined so far. A function shadows a builtin of the same name
@@ -130,7 +131,10 @@ class Tokenizer {
   /** Reaching a new command position ends any declaration context */
   private set atCommandStart(value: boolean) {
     this._atCommandStart = value;
-    if (value) this.inDeclarationCommand = false;
+    if (value) {
+      this.inDeclarationCommand = false;
+      this.afterTimeKeyword = false;
+    }
   }
 
   constructor(src: string, options: ParseOptions = {}) {
@@ -691,8 +695,9 @@ class Tokenizer {
       // Keywords like do, then, { start a new command context. `if`, `while`
       // and `until` do too — a command follows each of them, and without this
       // the `!` in `if ! grep …` arrives as a word and stops negating.
-      const startsCommand = ["do", "then", "else", "elif", "!", "[[", "if", "while", "until"].includes(value);
+      const startsCommand = ["do", "then", "else", "elif", "!", "[[", "if", "while", "until", "time"].includes(value);
       this.atCommandStart = startsCommand;
+      this.afterTimeKeyword = value === "time";
       return;
     }
 
@@ -714,6 +719,8 @@ class Tokenizer {
     }
 
     const wasCommandStart = this.atCommandStart;
+    const wasAfterTime = this.afterTimeKeyword;
+    this.afterTimeKeyword = false;
     const afterFunctionKeyword = this.lastTokenIs(TokenType.Keyword, "function");
     this.tokens.push({
       type: TokenType.Word,
@@ -722,7 +729,7 @@ class Tokenizer {
       ...(joins.length > 0 ? { joins } : {}),
       ...(unterminated ? { unterminated: true as const } : {}),
     });
-    this.atCommandStart = false;
+    this.atCommandStart = wasAfterTime && (value === "-p" || value === "--");
 
     if (afterFunctionKeyword) this.definedFunctions.add(value);
 

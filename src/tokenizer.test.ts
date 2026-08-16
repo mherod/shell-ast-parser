@@ -482,3 +482,42 @@ describe("advanced zsh tokenization constructs", () => {
   });
 });
 
+describe("time keyword tokenization", () => {
+  test("time at command position tokenizes as Keyword", () => {
+    const tokens = tokenize("time ls -la").filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.type).toBe(TokenType.Keyword);
+    expect(tokens[0]!.value).toBe("time");
+    expect(tokens[1]!.type).toBe(TokenType.Word);
+    expect(tokens[1]!.value).toBe("ls");
+  });
+
+  test("time -p keeps subsequent command keyword at command start", () => {
+    const tokens = tokenize("time -p for i in 1; do :; done").filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.type).toBe(TokenType.Keyword);
+    expect(tokens[0]!.value).toBe("time");
+    expect(tokens[1]!.type).toBe(TokenType.Word);
+    expect(tokens[1]!.value).toBe("-p");
+    expect(tokens[2]!.type).toBe(TokenType.Keyword);
+    expect(tokens[2]!.value).toBe("for");
+  });
+
+  test("time in argument position remains a Word", () => {
+    const tokens = tokenize("echo time").filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.type).toBe(TokenType.Word);
+    expect(tokens[0]!.value).toBe("echo");
+    expect(tokens[1]!.type).toBe(TokenType.Word);
+    expect(tokens[1]!.value).toBe("time");
+  });
+
+  test("! time tokenizes both as Keywords", () => {
+    const tokens = tokenize("! time ls").filter(t => t.type !== TokenType.EOF);
+    expect(tokens[0]!.type).toBe(TokenType.Keyword);
+    expect(tokens[0]!.value).toBe("!");
+    expect(tokens[1]!.type).toBe(TokenType.Keyword);
+    expect(tokens[1]!.value).toBe("time");
+    expect(tokens[2]!.type).toBe(TokenType.Word);
+    expect(tokens[2]!.value).toBe("ls");
+  });
+});
+
+
